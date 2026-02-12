@@ -41,10 +41,10 @@ jobs:
 
       - name: Import images into k3s containerd
         run: |
-          docker save ${{ env.REGISTRY }}/device-manager:latest | sudo k3s ctr images import -
-          docker save ${{ env.REGISTRY }}/mqtt-collector:latest | sudo k3s ctr images import -
-          docker save ${{ env.REGISTRY }}/iot-device-simulator:latest | sudo k3s ctr images import -
-          docker save ${{ env.REGISTRY }}/alertmanager-github-receiver:latest | sudo k3s ctr images import -
+          docker save ${{ env.REGISTRY }}/device-manager:latest | sudo -E k3s ctr images import -
+          docker save ${{ env.REGISTRY }}/mqtt-collector:latest | sudo -E k3s ctr images import -
+          docker save ${{ env.REGISTRY }}/iot-device-simulator:latest | sudo -E k3s ctr images import -
+          docker save ${{ env.REGISTRY }}/alertmanager-github-receiver:latest | sudo -E k3s ctr images import -
 
   # ──────────────────────────────────────────────────────────────
   # Stage 2: Run tests (gate deployment)
@@ -132,7 +132,7 @@ jobs:
 
       - name: Create Kubernetes secrets
         run: |
-          sudo kubectl create secret generic iot-meter-secrets \
+          sudo -E kubectl create secret generic iot-meter-secrets \
             --namespace=${{ env.K8S_NAMESPACE }} \
             --from-literal=DB_USER="${{ secrets.DB_USER || 'iot_user' }}" \
             --from-literal=DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
@@ -147,23 +147,23 @@ jobs:
             --from-literal=MINIO_SECRET_KEY="${{ secrets.MINIO_ROOT_PASSWORD }}" \
             --from-literal=MINIO_ROOT_USER="${{ secrets.MINIO_ROOT_USER || 'minioadmin' }}" \
             --from-literal=MINIO_ROOT_PASSWORD="${{ secrets.MINIO_ROOT_PASSWORD }}" \
-            --dry-run=client -o yaml | sudo kubectl apply -f -
+            --dry-run=client -o yaml | sudo -E kubectl apply -f -
 
       - name: Apply production overlay
-        run: sudo kubectl apply -k k8s/overlays/production/
+        run: sudo -E kubectl apply -k k8s/overlays/production/
 
       - name: Wait for rollouts
         run: |
           for deploy in postgres minio influxdb mosquitto device-manager mqtt-collector prometheus alertmanager grafana alertmanager-github-receiver; do
             echo "Waiting for $deploy..."
-            sudo kubectl rollout status deployment/$deploy \
+            sudo -E kubectl rollout status deployment/$deploy \
               -n ${{ env.K8S_NAMESPACE }} --timeout=180s
           done
 
           # Wait for simulator only if enabled
           if [[ "${{ env.SIMULATOR_REPLICAS }}" == "1" ]]; then
             echo "Waiting for iot-simulator..."
-            sudo kubectl rollout status deployment/iot-simulator \
+            sudo -E kubectl rollout status deployment/iot-simulator \
               -n ${{ env.K8S_NAMESPACE }} --timeout=120s
           fi
 
@@ -187,10 +187,10 @@ jobs:
         if: always()
         run: |
           echo "=== Pod Status ==="
-          sudo kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o wide
+          sudo -E kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o wide
           echo ""
           echo "=== Services ==="
-          sudo kubectl get svc -n ${{ env.K8S_NAMESPACE }}
+          sudo -E kubectl get svc -n ${{ env.K8S_NAMESPACE }}
           echo ""
           echo "=== PV/PVC ==="
-          sudo kubectl get pv,pvc -n ${{ env.K8S_NAMESPACE }}
+          sudo -E kubectl get pv,pvc -n ${{ env.K8S_NAMESPACE }}
