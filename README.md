@@ -157,7 +157,9 @@ docker-compose down -v
 | Service | URL/Port | Credentials |
 |---------|----------|-------------|
 | Device Manager API | http://localhost:8080 | N/A |
+| Grafana Dashboard | http://localhost:3000 | admin / admin |
 | Prometheus UI | http://localhost:9091 | N/A |
+| Alertmanager | http://localhost:9093 | N/A |
 | MinIO Console | http://localhost:9090 | minioadmin / minioadmin123 |
 | InfluxDB UI | http://localhost:8086 | admin / adminpassword |
 | PostgreSQL | localhost:5432 | iot_user / iot_password |
@@ -486,6 +488,87 @@ and K8s pod health for post-incident analysis.
 ### OpenTelemetry
 
 Prometheus v3.4+ includes a native **OTLP receiver** (`--web.enable-otlp-receiver`), enabled by default in this deployment. Applications or sidecars that speak OpenTelemetry Protocol can push metrics directly to Prometheus at `http://prometheus:9090/api/v1/otlp/v1/metrics`. The application services currently use the `prometheus_client` / `prometheus_flask_instrumentator` libraries for Prometheus-native instrumentation, which is the most battle-tested approach for Python + Flask. The OTLP receiver is available for future integration with OTel-instrumented services or distributed tracing exporters.
+
+### Grafana Dashboards
+
+Grafana provides the visualization layer on top of Prometheus. A pre-provisioned **"IoT Meter — Overview"** dashboard is included with 20 panels across four sections:
+
+| Section | Panels |
+|---------|--------|
+| **Service Health** | UP/DOWN status for Device Manager, MQTT Collector, MQTT Broker, InfluxDB, MinIO + unacknowledged alerts gauge |
+| **HTTP Traffic** | Request rate by endpoint, latency percentiles (p50/p95/p99), response status codes (2xx/4xx/5xx), backend latency (InfluxDB/MinIO) |
+| **MQTT Pipeline** | Messages received vs processed, processing errors by type, storage write latency, devices seen, sequence gaps |
+| **Kubernetes Cluster** | Pod restarts (last 1h), replicas available vs desired, PDB healthy pods |
+
+**Access:**
+
+```bash
+# Docker Compose
+open http://localhost:3000   # admin / admin
+
+# Kubernetes
+kubectl port-forward svc/grafana 3000:3000 -n iot-meter
+```
+
+Dashboard JSON is stored at `config/grafana/dashboards/iot-meter-overview.json` and auto-provisioned on startup.
+
+### Alertmanager & Incident Routing
+
+Prometheus evaluates **12 alerting rules** across 5 groups and routes firing alerts to Alertmanager, which deduplicates, groups, and forwards them to a **GitHub Issues webhook receiver**.
+
+**Alert pipeline:** Prometheus → Alertmanager → GitHub Issues webhook → `lbartok/iot-meter` issues
+
+#### Alerting Rules
+
+| Alert | Severity | Condition |
+|-------|----------|------------|
+| `ServiceDown` | critical | `up == 0` for 2m |
+| `MQTTBrokerDisconnected` | critical | `mqtt_connected == 0` for 1m |
+| `InfluxDBDown` | critical | `influxdb_ready == 0` for 2m |
+| `MinIODown` | critical | `minio_ready == 0` for 2m |
+| `HighErrorRate` | warning | HTTP 5xx rate > 5% for 5m |
+| `HighLatencyP95` | warning | p95 latency > 2s for 5m |
+| `InfluxDBQuerySlow` | warning | Avg query time > 1s for 5m |
+| `HighSequenceGaps` | warning | Gap rate > 0.5/s for 10m |
+| `MQTTProcessingErrors` | warning | Error rate > 0.1/s for 5m |
+| `UnacknowledgedAlertsPiling` | warning | > 10 unacked alerts for 15m |
+| `PodCrashLooping` | critical | > 3 restarts in 1h |
+| `DeploymentReplicasMismatch` | warning | Available ≠ desired for 10m |
+
+#### GitHub Issues Integration
+
+When alerts fire, the webhook receiver automatically:
+1. Creates a GitHub Issue with labels `alert`, `severity/{critical,warning}`, `service/{name}`
+2. Deduplicates — won't create a second issue for the same alert
+3. Auto-closes the issue with a "Resolved" comment when the alert clears
+
+**Configuration:**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GITHUB_TOKEN` | Personal access token with `issues` scope | (required) |
+| `GITHUB_OWNER` | Repository owner | `lbartok` |
+| `GITHUB_REPO` | Repository name | `iot-meter` |
+| `ALERT_DRY_RUN` | Set to `1` to log without creating issues | `1` |
+
+To enable live GitHub Issues creation:
+
+```bash
+# Docker Compose
+export GITHUB_TOKEN=ghp_your_token_here
+export ALERT_DRY_RUN=0
+docker-compose up -d
+```
+
+**Access Alertmanager:**
+
+```bash
+# Docker Compose
+open http://localhost:9093
+
+# Kubernetes
+kubectl port-forward svc/alertmanager 9093:9093 -n iot-meter
+```
 
 ## Troubleshooting
 

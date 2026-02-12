@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning — loads JSON dashboards from disk
+apiVersion: 1
+
+providers:
+  - name: 'iot-meter'
+    orgId: 1
+    folder: 'IoT Meter'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

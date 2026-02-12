@@ -1,0 +1,178 @@
+---
+# =======================================================================
+# Grafana — Dashboards and visualization
+# =======================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: iot-meter
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: iot-meter
+data:
+  prometheus.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: '10s'
+          httpMethod: POST
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: iot-meter
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: iot-meter
+data:
+  dashboard.yml: |
+    apiVersion: 1
+    providers:
+      - name: 'iot-meter'
+        orgId: 1
+        folder: 'IoT Meter'
+        type: file
+        disableDeletion: false
+        editable: true
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /etc/grafana/dashboards
+          foldersFromFilesStructure: false
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: iot-meter
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: iot-meter
+data:
+  # Dashboard JSON is large — use a separate ConfigMap to avoid
+  # kustomize size issues. The JSON file is read from the local
+  # config directory during build; below is a minimal placeholder.
+  # In production, mount the actual dashboard JSON via a volume or
+  # inject it with kustomize configMapGenerator.
+  iot-meter-overview.json: |
+    {}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: iot-meter
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  strategy:
+    type: Recreate          # Single replica — recreate to avoid data conflicts
+  template:
+    metadata:
+      labels:
+        app: grafana
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        fsGroup: 472         # grafana group
+        runAsNonRoot: true
+        runAsUser: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana-oss:11.5.1
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+          ports:
+            - containerPort: 3000
+              name: http
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /etc/grafana/dashboards
+            - name: data
+              mountPath: /var/lib/grafana
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: data
+          emptyDir: {}       # Use PV in prod overlay
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: iot-meter
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  selector:
+    app: grafana

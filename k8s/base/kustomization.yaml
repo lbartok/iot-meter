@@ -18,3 +18,5 @@ resources:
   - pod-disruption-budgets.yaml
   - prometheus.yaml
   - kube-state-metrics.yaml
+  - grafana.yaml
+  - alertmanager.yaml

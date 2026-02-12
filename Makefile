@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all setup-hooks perf-test perf-test-api perf-test-mqtt prom-open prom-targets prom-logs k8s-port-forward-prom
+.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all setup-hooks perf-test perf-test-api perf-test-mqtt prom-open prom-targets prom-logs k8s-port-forward-prom grafana-open grafana-logs alertmanager-open alertmanager-logs k8s-port-forward-grafana k8s-port-forward-alertmanager
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -108,6 +108,7 @@ k8s-build: ## Build Docker images for Kubernetes
 	docker build -t $(REGISTRY)/device-manager:latest ./services/device-manager
 	docker build -t $(REGISTRY)/mqtt-collector:latest ./services/mqtt-collector
 	docker build -t $(REGISTRY)/iot-device-simulator:latest ./services/iot-device-simulator
+	docker build -t $(REGISTRY)/alertmanager-github-receiver:latest ./services/alertmanager-github-receiver
 
 k8s-deploy: ## Deploy all services to Kubernetes (local dev)
 	kubectl apply -k k8s/base/
@@ -234,3 +235,27 @@ prom-logs: ## Show Prometheus container logs
 
 k8s-port-forward-prom: ## Port-forward Prometheus to localhost:9091 (K8s)
 	kubectl port-forward svc/prometheus 9091:9090 -n $(K8S_NAMESPACE)
+
+# ─── Grafana / Dashboards ─────────────────────────────────────────────────────
+
+grafana-open: ## Open Grafana dashboard in browser (Docker Compose)
+	@echo "Opening Grafana at http://localhost:3000 ..."
+	@open http://localhost:3000 2>/dev/null || xdg-open http://localhost:3000 2>/dev/null || echo "Visit http://localhost:3000"
+
+grafana-logs: ## Show Grafana container logs
+	docker-compose logs -f grafana
+
+k8s-port-forward-grafana: ## Port-forward Grafana to localhost:3000 (K8s)
+	kubectl port-forward svc/grafana 3000:3000 -n $(K8S_NAMESPACE)
+
+# ─── Alertmanager ─────────────────────────────────────────────────────────
+
+alertmanager-open: ## Open Alertmanager in browser (Docker Compose)
+	@echo "Opening Alertmanager at http://localhost:9093 ..."
+	@open http://localhost:9093 2>/dev/null || xdg-open http://localhost:9093 2>/dev/null || echo "Visit http://localhost:9093"
+
+alertmanager-logs: ## Show Alertmanager container logs
+	docker-compose logs -f alertmanager
+
+k8s-port-forward-alertmanager: ## Port-forward Alertmanager to localhost:9093 (K8s)
+	kubectl port-forward svc/alertmanager 9093:9093 -n $(K8S_NAMESPACE)

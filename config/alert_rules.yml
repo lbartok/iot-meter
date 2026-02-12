@@ -1,0 +1,166 @@
+# Prometheus alerting rules for IoT Meter platform
+# These rules fire alerts when service health degrades.
+# Alerts are routed via Alertmanager → GitHub Issues.
+
+groups:
+  - name: service_health
+    rules:
+      # ── Service availability ──────────────────────────────────────
+
+      - alert: ServiceDown
+        expr: up{job=~"device-manager|mqtt-collector"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: '{{ $labels.job }} is DOWN'
+          description: 'Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }}) for more than 2 minutes.'
+
+      - alert: MQTTBrokerDisconnected
+        expr: mqtt_collector_mqtt_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: mqtt-collector
+        annotations:
+          summary: 'MQTT collector lost broker connection'
+          description: 'mqtt_collector_mqtt_connected has been 0 for >1m. No messages are being consumed.'
+
+      - alert: InfluxDBDown
+        expr: mqtt_collector_influxdb_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: mqtt-collector
+        annotations:
+          summary: 'InfluxDB is not reachable from collector'
+          description: 'mqtt_collector_influxdb_ready == 0 for >2m. Time-series writes are failing.'
+
+      - alert: MinIODown
+        expr: mqtt_collector_minio_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: mqtt-collector
+        annotations:
+          summary: 'MinIO is not reachable from collector'
+          description: 'mqtt_collector_minio_ready == 0 for >2m. Raw data storage is failing.'
+
+  - name: api_performance
+    rules:
+      # ── HTTP error rate ───────────────────────────────────────────
+
+      - alert: HighErrorRate
+        expr: >
+          sum(rate(http_requests_total{job="device-manager", status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="device-manager"}[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: device-manager
+        annotations:
+          summary: 'Device Manager error rate above 5%'
+          description: 'HTTP 5xx rate is {{ $value | humanizePercentage }} over the last 5 minutes.'
+
+      # ── HTTP latency ──────────────────────────────────────────────
+
+      - alert: HighLatencyP95
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="device-manager"}[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: device-manager
+        annotations:
+          summary: 'Device Manager p95 latency above 2s'
+          description: 'p95 request latency is {{ $value | humanizeDuration }}.'
+
+      # ── Backend latency ───────────────────────────────────────────
+
+      - alert: InfluxDBQuerySlow
+        expr: >
+          rate(device_manager_influxdb_query_duration_seconds_sum[5m])
+          /
+          rate(device_manager_influxdb_query_duration_seconds_count[5m])
+          > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: device-manager
+        annotations:
+          summary: 'InfluxDB queries averaging above 1s'
+          description: 'Average InfluxDB query time is {{ $value | humanizeDuration }}.'
+
+  - name: mqtt_pipeline
+    rules:
+      # ── Sequence gaps ─────────────────────────────────────────────
+
+      - alert: HighSequenceGaps
+        expr: rate(mqtt_collector_sequence_gaps_total[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: mqtt-collector
+        annotations:
+          summary: 'Frequent MQTT sequence gaps detected'
+          description: 'Sequence gap rate is {{ $value }}/s — possible message loss or device reboot storm.'
+
+      # ── Processing errors ─────────────────────────────────────────
+
+      - alert: MQTTProcessingErrors
+        expr: sum(rate(mqtt_collector_messages_errors_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: mqtt-collector
+        annotations:
+          summary: 'MQTT message processing errors detected'
+          description: 'Error rate is {{ $value }}/s across error types: json_decode, processing, minio_store, influxdb_write.'
+
+  - name: device_alerts
+    rules:
+      # ── Unacknowledged alerts piling up ────────────────────────────
+
+      - alert: UnacknowledgedAlertsPiling
+        expr: device_manager_alerts_unacknowledged > 10
+        for: 15m
+        labels:
+          severity: warning
+          service: device-manager
+        annotations:
+          summary: 'More than 10 unacknowledged device alerts'
+          description: '{{ $value }} unacknowledged alerts have been pending for >15m. Review the alerts queue.'
+
+  - name: kubernetes
+    rules:
+      # ── Pod crash looping ─────────────────────────────────────────
+
+      - alert: PodCrashLooping
+        expr: increase(kube_pod_container_status_restarts_total{namespace="iot-meter"}[1h]) > 3
+        for: 5m
+        labels:
+          severity: critical
+          service: '{{ $labels.pod }}'
+        annotations:
+          summary: 'Pod {{ $labels.pod }} is crash-looping'
+          description: '{{ $labels.pod }} has restarted {{ $value }} times in the last hour.'
+
+      # ── Deployment replica mismatch ───────────────────────────────
+
+      - alert: DeploymentReplicasMismatch
+        expr: >
+          kube_deployment_status_replicas_available{namespace="iot-meter"}
+          !=
+          kube_deployment_spec_replicas{namespace="iot-meter"}
+        for: 10m
+        labels:
+          severity: warning
+          service: '{{ $labels.deployment }}'
+        annotations:
+          summary: 'Deployment {{ $labels.deployment }} has unavailable replicas'
+          description: 'Available: {{ $value }}, desired: {{ with printf "kube_deployment_spec_replicas{namespace=\"iot-meter\",deployment=\"%s\"}" $labels.deployment | query }}{{ . | first | value }}{{ end }}.'

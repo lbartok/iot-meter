@@ -207,10 +207,13 @@ services:
       - '--web.console.templates=/etc/prometheus/consoles'
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prometheus-data:/prometheus
     depends_on:
       device-manager:
         condition: service_started
+      alertmanager:
+        condition: service_healthy
     networks:
       - iot-network
     restart: unless-stopped
@@ -220,6 +223,73 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # Grafana (Dashboards and visualization)
+  grafana:
+    image: grafana/grafana-oss:11.5.1
+    container_name: iot-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - iot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Alertmanager (Alert routing and deduplication)
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: iot-alertmanager
+    ports:
+      - "9093:9093"
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    depends_on:
+      alertmanager-github-receiver:
+        condition: service_started
+    networks:
+      - iot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Alertmanager → GitHub Issues webhook receiver
+  alertmanager-github-receiver:
+    build:
+      context: ./services/alertmanager-github-receiver
+      dockerfile: Dockerfile
+    container_name: iot-alertmanager-github-receiver
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-lbartok}
+      GITHUB_REPO: ${GITHUB_REPO:-iot-meter}
+      DRY_RUN: ${ALERT_DRY_RUN:-1}
+    networks:
+      - iot-network
+    restart: unless-stopped
 
 networks:
   iot-network:
@@ -232,3 +302,5 @@ volumes:
   influxdb-data:
   postgres-data:
   prometheus-data:
+  grafana-data:
+  alertmanager-data:

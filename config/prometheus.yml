@@ -7,6 +7,17 @@ global:
   scrape_timeout: 10s
 
 # -----------------------------------------------------------------------
+# Alerting — route to Alertmanager
+# -----------------------------------------------------------------------
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - '/etc/prometheus/alert_rules.yml'
+
+# -----------------------------------------------------------------------
 # Scrape targets
 # -----------------------------------------------------------------------
 scrape_configs:
