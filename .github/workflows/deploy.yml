@@ -130,6 +130,9 @@ jobs:
           sudo mkdir -p /opt/iot-meter/data/{postgres,minio,influxdb,mosquitto}
           sudo chown -R 1000:1000 /opt/iot-meter/data
 
+      - name: Ensure namespace exists
+        run: sudo -E kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | sudo -E kubectl apply -f -
+
       - name: Create Kubernetes secrets
         run: |
           sudo -E kubectl create secret generic iot-meter-secrets \
