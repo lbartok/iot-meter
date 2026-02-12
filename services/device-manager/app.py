@@ -118,13 +118,35 @@ def return_db_connection(conn):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Module-level InfluxDB & MinIO clients (reused across requests)
+# ---------------------------------------------------------------------------
+_influx_client = None
+_minio_client = None
+
+
 def get_influx_client():
-    """Create InfluxDB client"""
-    return InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+    """Return the shared InfluxDB client, creating it on first call."""
+    global _influx_client
+    if _influx_client is None:
+        _influx_client = InfluxDBClient(
+            url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG,
+            enable_gzip=True,
+        )
+    return _influx_client
+
 
 def get_minio_client():
-    """Create MinIO client"""
-    return Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+    """Return the shared MinIO client, creating it on first call."""
+    global _minio_client
+    if _minio_client is None:
+        _minio_client = Minio(
+            MINIO_ENDPOINT,
+            access_key=MINIO_ACCESS_KEY,
+            secret_key=MINIO_SECRET_KEY,
+            secure=False,
+        )
+    return _minio_client
 
 
 # ---------------------------------------------------------------------------
@@ -388,8 +410,6 @@ def get_device_metrics(device_id):
                     'value': record.get_value()
                 })
         
-        influx_client.close()
-        
         return jsonify(metrics), 200
     except Exception as e:
         logger.error(f"Error fetching metrics: {e}")
@@ -397,21 +417,34 @@ def get_device_metrics(device_id):
 
 @app.route('/api/devices/<device_id>/raw-data', methods=['GET'])
 def get_device_raw_data(device_id):
-    """Get raw data files from MinIO for a device"""
+    """Get raw data files from MinIO for a device.
+
+    Query parameters:
+        limit  – max number of files to return (default 100, max 1000)
+        prefix – optional sub-path filter appended after device_id/
+    """
     try:
         minio_client = get_minio_client()
-        
+
+        limit = min(int(request.args.get('limit', 100)), 1000)
+        sub_prefix = request.args.get('prefix', '')
+        full_prefix = f"{device_id}/{sub_prefix}"
+
         # List objects with device_id prefix
-        objects = minio_client.list_objects(MINIO_BUCKET, prefix=f"{device_id}/", recursive=True)
-        
+        objects = minio_client.list_objects(
+            MINIO_BUCKET, prefix=full_prefix, recursive=True,
+        )
+
         files = []
         for obj in objects:
             files.append({
                 'filename': obj.object_name,
                 'size': obj.size,
-                'last_modified': obj.last_modified.isoformat() if obj.last_modified else None
+                'last_modified': obj.last_modified.isoformat() if obj.last_modified else None,
             })
-        
+            if len(files) >= limit:
+                break
+
         return jsonify(files), 200
     except Exception as e:
         logger.error(f"Error fetching raw data: {e}")

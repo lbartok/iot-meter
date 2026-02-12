@@ -97,9 +97,12 @@ services:
       dockerfile: Dockerfile
     container_name: iot-mqtt-collector
     depends_on:
-      - mosquitto
-      - minio
-      - influxdb
+      mosquitto:
+        condition: service_started
+      minio:
+        condition: service_healthy
+      influxdb:
+        condition: service_started
     environment:
       MQTT_BROKER: mosquitto
       MQTT_PORT: 1883

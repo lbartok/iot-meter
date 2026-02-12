@@ -13,4 +13,4 @@ COPY app.py .
 EXPOSE 8080
 
 # Run with gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "--timeout", "120", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "--threads", "4", "--timeout", "120", "app:app"]
