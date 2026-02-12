@@ -1,0 +1,173 @@
+services:
+  # MQTT Broker
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: iot-mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-logs:/mosquitto/log
+    networks:
+      - iot-network
+
+  # MinIO (S3-compatible storage)
+  minio:
+    image: minio/minio:latest
+    container_name: iot-minio
+    ports:
+      - "9000:9000"
+      - "9090:9090"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server /data --console-address ":9090"
+    volumes:
+      - minio-data:/data
+    networks:
+      - iot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # MinIO Client for bucket creation
+  minio-client:
+    image: minio/mc:latest
+    container_name: iot-minio-client
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10;
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin123;
+      /usr/bin/mc mb myminio/iot-data --ignore-existing;
+      /usr/bin/mc anonymous set download myminio/iot-data;
+      exit 0;
+      "
+    networks:
+      - iot-network
+
+  # InfluxDB (Time series database)
+  influxdb:
+    image: influxdb:2.7
+    container_name: iot-influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: adminpassword
+      DOCKER_INFLUXDB_INIT_ORG: iot-org
+      DOCKER_INFLUXDB_INIT_BUCKET: iot-metrics
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: iot-admin-token-secret-12345
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    networks:
+      - iot-network
+
+  # PostgreSQL (Device metadata database)
+  postgres:
+    image: postgres:15-alpine
+    container_name: iot-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: iot_devices
+      POSTGRES_USER: iot_user
+      POSTGRES_PASSWORD: iot_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./config/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - iot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iot_user -d iot_devices"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MQTT Collector Service
+  mqtt-collector:
+    build:
+      context: ./services/mqtt-collector
+      dockerfile: Dockerfile
+    container_name: iot-mqtt-collector
+    depends_on:
+      - mosquitto
+      - minio
+      - influxdb
+    environment:
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: 1883
+      MQTT_TOPIC: iot/+/telemetry
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET: iot-data
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: iot-admin-token-secret-12345
+      INFLUXDB_ORG: iot-org
+      INFLUXDB_BUCKET: iot-metrics
+    networks:
+      - iot-network
+    restart: unless-stopped
+
+  # Device Manager Service (REST API)
+  device-manager:
+    build:
+      context: ./services/device-manager
+      dockerfile: Dockerfile
+    container_name: iot-device-manager
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: iot_devices
+      DB_USER: iot_user
+      DB_PASSWORD: iot_password
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: iot-admin-token-secret-12345
+      INFLUXDB_ORG: iot-org
+      INFLUXDB_BUCKET: iot-metrics
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET: iot-data
+    networks:
+      - iot-network
+    restart: unless-stopped
+
+  # IoT Device Simulator (for testing)
+  iot-simulator:
+    build:
+      context: ./services/iot-device-simulator
+      dockerfile: Dockerfile
+    container_name: iot-device-simulator
+    depends_on:
+      - mosquitto
+    environment:
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: 1883
+      DEVICE_COUNT: 3
+      PUBLISH_INTERVAL: 5
+    networks:
+      - iot-network
+    restart: unless-stopped
+
+networks:
+  iot-network:
+    driver: bridge
+
+volumes:
+  mosquitto-data:
+  mosquitto-logs:
+  minio-data:
+  influxdb-data:
+  postgres-data:
