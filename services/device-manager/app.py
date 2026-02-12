@@ -2,11 +2,14 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2 import pool
+from contextlib import contextmanager
 import os
 import json
+import re
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from influxdb_client import InfluxDBClient
 from minio import Minio
 import paho.mqtt.client as mqtt
@@ -49,9 +52,58 @@ MQTT_PORT = int(os.getenv('MQTT_PORT', 1883))
 # Supported command types — IoT.md §6.2
 VALID_COMMANDS = {'update_config', 'start_ota', 'reboot', 'factory_reset', 'request_status'}
 
+# ---------------------------------------------------------------------------
+# Database connection pool
+# ---------------------------------------------------------------------------
+_db_pool = None
+
+
+def _get_pool():
+    """Lazily create a threaded connection pool (1–10 connections)."""
+    global _db_pool
+    if _db_pool is None or _db_pool.closed:
+        _db_pool = pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=int(os.getenv('DB_POOL_MAX', 10)),
+            cursor_factory=RealDictCursor,
+            **DB_CONFIG,
+        )
+    return _db_pool
+
+
+@contextmanager
+def get_db():
+    """Context manager that borrows a connection from the pool.
+
+    Usage::
+
+        with get_db() as (conn, cur):
+            cur.execute("SELECT 1")
+            ...
+    """
+    p = _get_pool()
+    conn = p.getconn()
+    try:
+        cur = conn.cursor()
+        yield conn, cur
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        p.putconn(conn)
+
+
 def get_db_connection():
-    """Create database connection"""
-    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+    """Legacy helper — prefer `get_db()` context manager."""
+    return _get_pool().getconn()
+
+
+def return_db_connection(conn):
+    """Return a connection obtained via `get_db_connection()` back to the pool."""
+    _get_pool().putconn(conn)
+
 
 def get_influx_client():
     """Create InfluxDB client"""
@@ -62,11 +114,48 @@ def get_minio_client():
     return Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
 
 
+# ---------------------------------------------------------------------------
+# Module-level MQTT client (reused for all command publishes)
+# ---------------------------------------------------------------------------
+_mqtt_client = None
+
+
 def get_mqtt_client():
-    """Create and connect a temporary MQTT client for publishing commands."""
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"device-manager-{uuid.uuid4().hex[:8]}")
-    client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    return client
+    """Return the shared MQTT client, creating it on first call."""
+    global _mqtt_client
+    if _mqtt_client is None or not _mqtt_client.is_connected():
+        _mqtt_client = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION2,
+            client_id=f"device-manager-{uuid.uuid4().hex[:8]}",
+        )
+        _mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        _mqtt_client.loop_start()           # background network thread
+    return _mqtt_client
+
+
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
+
+# Allowed pattern for identifiers used in Flux queries (device IDs, metric names)
+_SAFE_ID_RE = re.compile(r'^[A-Za-z0-9_.\-]+$')
+
+# Allowed pattern for Flux time literals like -1h, -24h, -30m, now()
+_SAFE_TIME_RE = re.compile(r'^-?\d+[smhd]$|^now\(\)$')
+
+
+def _sanitise_flux_id(value: str, label: str = 'value') -> str:
+    """Validate that *value* is safe for interpolation into a Flux query."""
+    if not _SAFE_ID_RE.match(value):
+        raise ValueError(f"Invalid {label}: {value!r}")
+    return value
+
+
+def _sanitise_flux_time(value: str, label: str = 'time') -> str:
+    """Validate a Flux time literal (e.g. ``-1h``, ``now()``)."""
+    if not _SAFE_TIME_RE.match(value):
+        raise ValueError(f"Invalid {label}: {value!r}")
+    return value
 
 # Device Management Endpoints
 
@@ -86,11 +175,8 @@ def liveness():
 def readiness():
     """Readiness probe - can the service handle requests?"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1")
-        cursor.close()
-        conn.close()
+        with get_db() as (conn, cur):
+            cur.execute("SELECT 1")
         return jsonify({'status': 'ready', 'service': 'device-manager'}), 200
     except Exception as e:
         logger.error(f"Readiness check failed: {e}")
@@ -100,31 +186,26 @@ def readiness():
 def get_devices():
     """Get all devices"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        status_filter = request.args.get('status')
-        device_type_filter = request.args.get('type')
-        
-        query = "SELECT * FROM devices WHERE 1=1"
-        params = []
-        
-        if status_filter:
-            query += " AND status = %s"
-            params.append(status_filter)
-            
-        if device_type_filter:
-            query += " AND device_type = %s"
-            params.append(device_type_filter)
-            
-        query += " ORDER BY created_at DESC"
-        
-        cursor.execute(query, params)
-        devices = cursor.fetchall()
-        
-        cursor.close()
-        conn.close()
-        
+        with get_db() as (conn, cur):
+            status_filter = request.args.get('status')
+            device_type_filter = request.args.get('type')
+
+            query = "SELECT * FROM devices WHERE 1=1"
+            params = []
+
+            if status_filter:
+                query += " AND status = %s"
+                params.append(status_filter)
+
+            if device_type_filter:
+                query += " AND device_type = %s"
+                params.append(device_type_filter)
+
+            query += " ORDER BY created_at DESC"
+
+            cur.execute(query, params)
+            devices = cur.fetchall()
+
         return jsonify(devices), 200
     except Exception as e:
         logger.error(f"Error fetching devices: {e}")
@@ -134,20 +215,13 @@ def get_devices():
 def get_device(device_id):
     """Get a specific device"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM devices WHERE device_id = %s", (device_id,))
-        device = cursor.fetchone()
-        
+        with get_db() as (conn, cur):
+            cur.execute("SELECT * FROM devices WHERE device_id = %s", (device_id,))
+            device = cur.fetchone()
+
         if not device:
-            cursor.close()
-            conn.close()
             return jsonify({'error': 'Device not found'}), 404
-            
-        cursor.close()
-        conn.close()
-        
+
         return jsonify(device), 200
     except Exception as e:
         logger.error(f"Error fetching device: {e}")

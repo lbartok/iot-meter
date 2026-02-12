@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all setup-hooks
+.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all setup-hooks perf-test perf-test-api perf-test-mqtt
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -207,3 +207,15 @@ setup-hooks: ## Install git pre-push hook (runs tests before push)
 	cp hooks/pre-push .git/hooks/pre-push
 	chmod +x .git/hooks/pre-push
 	@echo "✅ Git pre-push hook installed — tests will run before each push"
+
+# ─── Performance Testing ──────────────────────────────────────────────
+
+perf-test: ## Run all k6 performance tests (requires running services)
+	k6 run tests/performance/api_load_test.js
+	k6 run tests/performance/mqtt_publish_test.js
+
+perf-test-api: ## Run k6 API load test only
+	k6 run tests/performance/api_load_test.js
+
+perf-test-mqtt: ## Run k6 MQTT/dashboard load test only
+	k6 run tests/performance/mqtt_publish_test.js
