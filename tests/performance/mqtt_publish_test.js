@@ -18,6 +18,7 @@
 import http from 'k6/http';
 import { check, group, sleep } from 'k6';
 import { Trend, Counter } from 'k6/metrics';
+import { textSummary } from 'https://jslib.k6.io/k6-summary/0.1.0/index.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -150,7 +151,7 @@ export function dashboardRead() {
       const cmdRes = http.post(
         `${BASE_URL}/api/devices/${SEED_DEVICES[0]}/commands`,
         JSON.stringify({
-          cmd: 'get_status',
+          cmd: 'request_status',
           params: {},
         }),
         jsonHeaders,
@@ -190,5 +191,7 @@ export function handleSummary(data) {
   console.log(`\n  Successful reads: ${data.metrics.successful_reads?.values?.count || 0}`);
   console.log('');
 
-  return {};
+  return {
+    stdout: textSummary(data, { indent: ' ', enableColors: true }),
+  };
 }

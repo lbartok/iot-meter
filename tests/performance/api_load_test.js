@@ -12,6 +12,7 @@
 import http from 'k6/http';
 import { check, group, sleep } from 'k6';
 import { Trend, Counter, Rate } from 'k6/metrics';
+import { textSummary } from 'https://jslib.k6.io/k6-summary/0.1.0/index.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -206,5 +207,7 @@ export function handleSummary(data) {
   console.log(`  Devices deleted: ${data.metrics.devices_deleted?.values?.count || 0}`);
   console.log('');
 
-  return {};
+  return {
+    stdout: textSummary(data, { indent: ' ', enableColors: true }),
+  };
 }
