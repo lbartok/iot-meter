@@ -18,6 +18,26 @@ spec:
       labels:
         app: mqtt-collector
     spec:
+      initContainers:
+        - name: wait-for-minio
+          image: minio/mc:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for MinIO to be ready..."
+              until mc alias set myminio http://minio:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" 2>/dev/null; do
+                echo "MinIO not ready yet, retrying in 3s..."
+                sleep 3
+              done
+              echo "MinIO is reachable. Ensuring bucket exists..."
+              mc mb myminio/$MINIO_BUCKET --ignore-existing
+              echo "Bucket $MINIO_BUCKET ready."
+          envFrom:
+            - configMapRef:
+                name: iot-meter-config
+            - secretRef:
+                name: iot-meter-secrets
       containers:
         - name: mqtt-collector
           image: iot-meter/mqtt-collector:latest

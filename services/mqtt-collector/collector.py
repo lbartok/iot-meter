@@ -117,7 +117,14 @@ class MQTTCollector:
                 )
                 # Check if bucket exists (this actually contacts MinIO)
                 if not self.minio_client.bucket_exists(self.minio_bucket):
-                    logger.warning(f"Bucket {self.minio_bucket} does not exist, waiting for creation...")
+                    logger.warning(f"Bucket {self.minio_bucket} does not exist, creating it...")
+                    try:
+                        self.minio_client.make_bucket(self.minio_bucket)
+                        logger.info(f"Created bucket {self.minio_bucket}")
+                    except Exception as bucket_err:
+                        # Bucket may have been created by another process
+                        if 'BucketAlreadyOwnedByYou' not in str(bucket_err):
+                            raise
                 self.minio_ready = True
                 logger.info("MinIO client initialized successfully")
                 return
