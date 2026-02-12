@@ -771,8 +771,7 @@ class TestPrometheusMetrics:
         dm_client.get('/health')
         resp = dm_client.get('/metrics')
         body = resp.data.decode('utf-8')
-        # prometheus_flask_instrumentator exposes these families
-        assert 'http_request_duration' in body or 'http_requests' in body
+        assert 'http_request_duration_seconds' in body or 'http_requests_total' in body
 
     def test_metrics_contains_service_info(self, dm_client):
         """Custom service info metric should be present."""

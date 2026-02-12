@@ -8,7 +8,7 @@ import paho.mqtt.client as mqtt
 from minio import Minio
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
-from flask import Flask, jsonify
+from flask import Flask, jsonify, Response
 from prometheus_client import Counter, Histogram, Gauge, Info, generate_latest, CONTENT_TYPE_LATEST
 import logging
 
@@ -99,7 +99,6 @@ def metrics():
         MINIO_READY_GAUGE.set(1 if collector_instance.minio_ready else 0)
         INFLUXDB_READY_GAUGE.set(1 if collector_instance.influxdb_ready else 0)
         DEVICES_SEEN.set(len(collector_instance._device_last_seen))
-    from flask import Response
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 

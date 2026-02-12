@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -9,12 +9,12 @@ import json
 import re
 import uuid
 import logging
+import time as _time
 from datetime import datetime, timezone
 from influxdb_client import InfluxDBClient
 from minio import Minio
 import paho.mqtt.client as mqtt
-from prometheus_flask_instrumentator import Instrumentator
-from prometheus_client import Counter, Histogram, Gauge, Info
+from prometheus_client import Counter, Histogram, Gauge, Info, generate_latest, CONTENT_TYPE_LATEST
 
 # Configure logging
 logging.basicConfig(
@@ -29,13 +29,18 @@ CORS(app)
 # ---------------------------------------------------------------------------
 # Prometheus metrics
 # ---------------------------------------------------------------------------
-# Auto-instrument all Flask HTTP endpoints (request count, latency, size)
-instrumentator = Instrumentator(
-    should_group_status_codes=False,
-    should_ignore_untemplated=True,
-    excluded_handlers=['/metrics'],
+# HTTP request metrics (auto-collected via before/after_request hooks)
+HTTP_REQUEST_DURATION = Histogram(
+    'http_request_duration_seconds',
+    'HTTP request duration in seconds',
+    ['method', 'endpoint', 'status'],
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
 )
-instrumentator.instrument(app).expose(app, endpoint='/metrics')
+HTTP_REQUESTS_TOTAL = Counter(
+    'http_requests_total',
+    'Total HTTP requests',
+    ['method', 'endpoint', 'status'],
+)
 
 # Custom business metrics
 SERVICE_INFO = Info('device_manager', 'Device Manager service information')
@@ -68,6 +73,39 @@ DEVICES_TOTAL = Gauge(
 ALERTS_UNACKNOWLEDGED = Gauge(
     'device_manager_alerts_unacknowledged', 'Unacknowledged alerts count',
 )
+
+
+# ---------------------------------------------------------------------------
+# Prometheus /metrics endpoint + request instrumentation hooks
+# ---------------------------------------------------------------------------
+@app.route('/metrics', methods=['GET'])
+def prometheus_metrics():
+    """Expose Prometheus metrics."""
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+
+@app.before_request
+def _start_timer():
+    """Record request start time for latency tracking."""
+    if request.path == '/metrics':
+        return
+    request._prom_start = _time.monotonic()
+
+
+@app.after_request
+def _record_metrics(response):
+    """Record HTTP request metrics after each request."""
+    if request.path == '/metrics':
+        return response
+    duration = _time.monotonic() - getattr(request, '_prom_start', _time.monotonic())
+    endpoint = request.url_rule.rule if request.url_rule else request.path
+    HTTP_REQUEST_DURATION.labels(
+        method=request.method, endpoint=endpoint, status=response.status_code,
+    ).observe(duration)
+    HTTP_REQUESTS_TOTAL.labels(
+        method=request.method, endpoint=endpoint, status=response.status_code,
+    ).inc()
+    return response
 
 # Database configuration
 DB_CONFIG = {
