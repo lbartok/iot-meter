@@ -1,0 +1,19 @@
+#!/bin/sh
+# Pre-push hook: run unit + integration tests before pushing.
+# Prevents broken code from reaching CI.
+#
+# Install: this file is auto-installed by 'make setup-hooks'
+
+echo "Running tests before push..."
+python -m pytest tests/unit tests/integration --tb=short -q 2>&1
+
+STATUS=$?
+if [ $STATUS -ne 0 ]; then
+    echo ""
+    echo "❌ Tests failed — push aborted. Fix tests before pushing."
+    echo "   To skip: git push --no-verify"
+    exit 1
+fi
+
+echo "✅ All tests passed"
+exit 0

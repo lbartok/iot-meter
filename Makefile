@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all
+.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all setup-hooks
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -202,3 +202,8 @@ test-all: ## Run all tests (unit + integration + e2e)
 
 test-ci: ## Run unit + integration tests (CI-friendly, no infra needed)
 	python -m pytest tests/unit tests/integration -v --tb=short --cov=services --cov-report=term-missing
+
+setup-hooks: ## Install git pre-push hook (runs tests before push)
+	cp hooks/pre-push .git/hooks/pre-push
+	chmod +x .git/hooks/pre-push
+	@echo "✅ Git pre-push hook installed — tests will run before each push"
