@@ -84,14 +84,14 @@ class MQTTCollector:
         # Device last-seen tracking for online/offline (IoT.md §5)
         self._device_last_seen = {}
 
-        # Initialize MinIO client
+        # Initialize MinIO client (in background thread for resilience)
         self.minio_client = None
-        self.init_minio()
+        threading.Thread(target=self.init_minio, daemon=True).start()
 
-        # Initialize InfluxDB client
+        # Initialize InfluxDB client (in background thread for resilience)
         self.influx_client = None
         self.write_api = None
-        self.init_influxdb()
+        threading.Thread(target=self.init_influxdb, daemon=True).start()
 
         # Initialize MQTT client (paho-mqtt v2 API)
         self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -129,19 +129,26 @@ class MQTTCollector:
         logger.error("Failed to initialize MinIO client after all retries")
 
     def init_influxdb(self):
-        """Initialize InfluxDB client"""
-        try:
-            self.influx_client = InfluxDBClient(
-                url=self.influxdb_url,
-                token=self.influxdb_token,
-                org=self.influxdb_org
-            )
-            self.write_api = self.influx_client.write_api(write_options=SYNCHRONOUS)
-            self.influxdb_ready = True
-            logger.info("InfluxDB client initialized successfully")
-        except Exception as e:
-            self.influxdb_ready = False
-            logger.error(f"Failed to initialize InfluxDB client: {e}")
+        """Initialize InfluxDB client with retry logic"""
+        max_retries = 15
+        retry_delay = 5
+        for attempt in range(max_retries):
+            try:
+                self.influx_client = InfluxDBClient(
+                    url=self.influxdb_url,
+                    token=self.influxdb_token,
+                    org=self.influxdb_org
+                )
+                self.write_api = self.influx_client.write_api(write_options=SYNCHRONOUS)
+                self.influxdb_ready = True
+                logger.info("InfluxDB client initialized successfully")
+                return
+            except Exception as e:
+                logger.warning(f"InfluxDB init attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+        self.influxdb_ready = False
+        logger.error("Failed to initialize InfluxDB client after all retries")
 
     def on_connect(self, client, userdata, flags, reason_code, properties):
         """Callback when connected to MQTT broker (paho-mqtt v2 API)"""
