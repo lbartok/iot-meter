@@ -18,13 +18,61 @@ This system implements a scalable IoT solution with the following components:
 
 ### Data Flow
 
-```
-IoT Devices → MQTT Broker → MQTT Collector → MinIO (Raw Data Archive)
-                                           → InfluxDB (Time Series)
-                                           
-Device Manager API ← PostgreSQL (Device Metadata)
-                   ← InfluxDB (Metrics Query)
-                   ← MinIO (Raw Data Access)
+```mermaid
+flowchart LR
+    subgraph Devices["IoT Devices"]
+        DC["DC Power Meter"]
+        AC["AC Power Meter"]
+    end
+
+    subgraph Broker["MQTT Broker<br/>(Mosquitto)"]
+        T1(["iot/+/telemetry"])
+        T2(["iot/+/hello"])
+        T3(["iot/+/status"])
+        T4(["iot/+/command/ack"])
+        T5(["iot/+/ota/status"])
+    end
+
+    subgraph Collector["MQTT Collector"]
+        Router{"Route by<br/>topic suffix"}
+        Dedup["Dedup<br/>(device_id, seq)"]
+    end
+
+    subgraph Storage["Storage Layer"]
+        MinIO[("MinIO<br/>Raw JSON Archive")]
+        InfluxDB[("InfluxDB<br/>Time-Series Metrics")]
+        PostgreSQL[("PostgreSQL<br/>Device Metadata")]
+    end
+
+    subgraph API["Device Manager API<br/>(Flask)"]
+        REST["REST Endpoints<br/>/devices, /metrics,<br/>/alerts, /commands, /raw"]
+    end
+
+    Client["API Client /<br/>Dashboard"]
+
+    %% Device → Broker
+    DC -- "publish" --> T1 & T2 & T3
+    AC -- "publish" --> T1 & T2 & T3
+
+    %% Broker → Collector
+    T1 & T2 & T3 & T4 & T5 -- "subscribe" --> Dedup
+    Dedup --> Router
+
+    %% Collector → Storage
+    Router -- "telemetry JSON" --> MinIO
+    Router -- "hello / status /<br/>command_ack / ota" --> MinIO
+    Router -- "telemetry<br/>data points" --> InfluxDB
+
+    %% API reads
+    REST -- "query metrics" --> InfluxDB
+    REST -- "fetch raw files" --> MinIO
+    REST -- "CRUD devices,<br/>alerts, configs" --> PostgreSQL
+
+    %% API → Broker (commands)
+    REST -- "publish<br/>iot/{id}/command" --> Broker
+
+    %% Client
+    Client <-- "HTTP" --> REST
 ```
 
 ## Quick Start

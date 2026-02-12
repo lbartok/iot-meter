@@ -16,36 +16,35 @@
 
 ## 🔴 Critical — Security & Data Integrity
 
-### 1. ⬜ Fix Flux query injection in `app.py`
+### 1. ✅ Fix Flux query injection in `app.py`
 
-**File:** `services/device-manager/app.py` — `get_device_metrics()` (line ~305)
+**File:** `services/device-manager/app.py` — `get_device_metrics()`
 
-The `device_id`, `start`, `stop`, and `metric` parameters are interpolated directly
-into a Flux query string via f-string. A crafted `device_id` or query parameter can
-inject arbitrary Flux code.
+~~The `device_id`, `start`, `stop`, and `metric` parameters are interpolated directly
+into a Flux query string via f-string.~~
 
-**Fix:** Use InfluxDB client parameterised queries or sanitise/validate all inputs
-before interpolation.
+**Done:** Added `_sanitise_flux_id()` and `_sanitise_flux_time()` validators with
+regex allowlists. All Flux query inputs are validated before interpolation.
 
-### 2. ⬜ Add PostgreSQL connection pooling
+### 2. ✅ Add PostgreSQL connection pooling
 
-**File:** `services/device-manager/app.py` — `get_db_connection()` (line ~52)
+**File:** `services/device-manager/app.py`
 
-Every request opens a new `psycopg2.connect()` call and manually closes it. Under
-load this exhausts PostgreSQL connection limits and causes latency spikes.
+~~Every request opens a new `psycopg2.connect()` call and manually closes it.~~
 
-**Fix:** Replace with `psycopg2.pool.ThreadedConnectionPool` (or `psycopg_pool` for
-psycopg 3). Initialise the pool once at app startup.
+**Done:** Added `psycopg2.pool.ThreadedConnectionPool` with lazy init via `_get_pool()`.
+Pool size: 2–10 connections (configurable via env vars).
 
-### 3. ⬜ Add `datetime.timezone.utc` — deprecation fix
+### 3. ✅ Fix `datetime.timezone.utc` — deprecation fix
 
 **Files:**
-- `services/device-manager/app.py` (line 593) — `datetime.utcnow()`
-- `services/mqtt-collector/collector.py` (line 222) — `datetime.utcnow()`
+- `services/device-manager/app.py`
+- `services/mqtt-collector/collector.py`
 
-`datetime.utcnow()` is deprecated in Python 3.12+.
+~~`datetime.utcnow()` is deprecated in Python 3.12+.~~
 
-**Fix:** Replace with `datetime.now(datetime.timezone.utc)` everywhere.
+**Done:** Replaced all `datetime.utcnow()` with `datetime.now(timezone.utc)` in both
+files. Added `timezone` to imports.
 
 ---
 
@@ -62,14 +61,15 @@ device fleet can cause OOM.
 **Fix:** Use an LRU cache (`functools.lru_cache` or `cachetools.TTLCache`) with a
 configurable max size.
 
-### 5. ⬜ Deduplicate DB boilerplate in `app.py`
+### 5. ✅ Deduplicate DB boilerplate in `app.py`
 
 **File:** `services/device-manager/app.py`
 
-15+ endpoints repeat the same `conn = get_db_connection(); try/except/finally
-conn.close()` pattern (~100 duplicate lines).
+~~15+ endpoints repeat the same `conn = get_db_connection(); try/except/finally
+conn.close()` pattern (~100 duplicate lines).~~
 
-**Fix:** Extract a `with_db()` context manager or decorator. Combine with item #2.
+**Done:** Added `get_db()` context manager yielding `(conn, cur)`. All 15+ endpoints
+refactored to use `with get_db() as (conn, cur):`. Combined with connection pool (#2).
 
 ### 6. ⬜ Add request/response validation
 
@@ -80,15 +80,15 @@ passes to PostgreSQL.
 
 **Fix:** Add `marshmallow` or `pydantic` schemas for request validation.
 
-### 7. ⬜ Create MQTT client once for command publishing
+### 7. ✅ Create MQTT client once for command publishing
 
-**File:** `services/device-manager/app.py` — `send_command()` (line ~572)
+**File:** `services/device-manager/app.py`
 
-A new MQTT client is created per command request. Under load this exhausts broker
-connections.
+~~A new MQTT client is created per command request. Under load this exhausts broker
+connections.~~
 
-**Fix:** Create a module-level MQTT client at startup, reuse it for all command
-publishes.
+**Done:** Created module-level `_mqtt_client` with `get_mqtt_client()` lazy init.
+Client uses `loop_start()` background thread and is reused for all command publishes.
 
 ---
 
@@ -174,17 +174,35 @@ before starting.
 
 **Fix:** Add `healthcheck` + `depends_on.condition: service_healthy` for all services.
 
-### 18. ⬜ Add k6 performance test suite
+### 18. ✅ Add k6 performance test suite
 
-**Directory:** `tests/performance/` (new)
+**Directory:** `tests/performance/`
 
-No performance/load tests exist. Can't measure API throughput or regression.
+~~No performance/load tests exist.~~
 
-**Fix:** Create k6 scripts for device-manager API endpoints + MQTT publish load.
+**Done:** Created `api_load_test.js` (9 endpoint groups, 4-stage ramp), `mqtt_publish_test.js`
+(ingestion + dashboard scenarios), `README.md`, and Makefile targets (`perf-test`,
+`perf-test-api`, `perf-test-mqtt`).
 
 ---
 
 ## ✅ Recently Completed
+
+### ✅ App.py — Critical improvements (items #1–3, #5, #7)
+- **#1 Flux injection fix:** Added `_sanitise_flux_id()` / `_sanitise_flux_time()` regex
+  validators for all Flux query inputs
+- **#2 Connection pooling:** `psycopg2.pool.ThreadedConnectionPool` with lazy init,
+  2–10 pool size
+- **#3 datetime deprecation:** All `datetime.utcnow()` → `datetime.now(timezone.utc)`
+  in app.py and collector.py
+- **#5 DB boilerplate:** `get_db()` context manager replaces 15+ try/finally blocks
+- **#7 MQTT client reuse:** Module-level `get_mqtt_client()` with `loop_start()`
+
+### ✅ k6 performance test suite (#18)
+- `tests/performance/api_load_test.js` — 9 endpoint groups, 4-stage ramp
+- `tests/performance/mqtt_publish_test.js` — ingestion + dashboard scenarios
+- `tests/performance/README.md` — documentation
+- Makefile targets: `perf-test`, `perf-test-api`, `perf-test-mqtt`
 
 ### ✅ Update .md files to match v2 reality
 - README.md: Fixed v1→v2 payload, 5 MQTT topics, 5 DB tables, `generate_sample()`,

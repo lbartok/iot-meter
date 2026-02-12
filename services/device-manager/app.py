@@ -80,19 +80,26 @@ def get_db():
         with get_db() as (conn, cur):
             cur.execute("SELECT 1")
             ...
+
+    Note: uses ``get_db_connection()`` internally so that unit tests can
+    ``@patch('app.get_db_connection')`` and the context manager honours the mock.
     """
-    p = _get_pool()
-    conn = p.getconn()
+    conn = None
+    cur = None
     try:
+        conn = get_db_connection()
         cur = conn.cursor()
         yield conn, cur
         conn.commit()
     except Exception:
-        conn.rollback()
+        if conn is not None:
+            conn.rollback()
         raise
     finally:
-        cur.close()
-        p.putconn(conn)
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            return_db_connection(conn)
 
 
 def get_db_connection():
@@ -101,8 +108,14 @@ def get_db_connection():
 
 
 def return_db_connection(conn):
-    """Return a connection obtained via `get_db_connection()` back to the pool."""
-    _get_pool().putconn(conn)
+    """Return a connection back to the pool (no-op if pool is not initialised)."""
+    try:
+        if _db_pool is not None and not _db_pool.closed:
+            _db_pool.putconn(conn)
+        else:
+            conn.close()
+    except Exception:
+        pass
 
 
 def get_influx_client():
@@ -232,34 +245,27 @@ def create_device():
     """Create a new device"""
     try:
         data = request.json
-        
+
         required_fields = ['device_id', 'device_name']
         for field in required_fields:
             if field not in data:
                 return jsonify({'error': f'Missing required field: {field}'}), 400
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            """INSERT INTO devices (device_id, device_name, device_type, location, status, metadata) 
-               VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
-            (
-                data['device_id'],
-                data['device_name'],
-                data.get('device_type'),
-                data.get('location'),
-                data.get('status', 'active'),
-                data.get('metadata')
+
+        with get_db() as (conn, cur):
+            cur.execute(
+                """INSERT INTO devices (device_id, device_name, device_type, location, status, metadata) 
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+                (
+                    data['device_id'],
+                    data['device_name'],
+                    data.get('device_type'),
+                    data.get('location'),
+                    data.get('status', 'active'),
+                    data.get('metadata')
+                )
             )
-        )
-        
-        device = cursor.fetchone()
-        conn.commit()
-        
-        cursor.close()
-        conn.close()
-        
+            device = cur.fetchone()
+
         return jsonify(device), 201
     except psycopg2.IntegrityError:
         return jsonify({'error': 'Device with this ID already exists'}), 409
@@ -272,39 +278,30 @@ def update_device(device_id):
     """Update a device"""
     try:
         data = request.json
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Build update query dynamically
+
         update_fields = []
         params = []
-        
+
         for field in ['device_name', 'device_type', 'location', 'status', 'metadata']:
             if field in data:
                 update_fields.append(f"{field} = %s")
                 params.append(data[field])
-        
+
         if not update_fields:
             return jsonify({'error': 'No fields to update'}), 400
-        
+
         update_fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(device_id)
-        
+
         query = f"UPDATE devices SET {', '.join(update_fields)} WHERE device_id = %s RETURNING *"
-        
-        cursor.execute(query, params)
-        device = cursor.fetchone()
-        
+
+        with get_db() as (conn, cur):
+            cur.execute(query, params)
+            device = cur.fetchone()
+
         if not device:
-            cursor.close()
-            conn.close()
             return jsonify({'error': 'Device not found'}), 404
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
+
         return jsonify(device), 200
     except Exception as e:
         logger.error(f"Error updating device: {e}")
@@ -314,21 +311,13 @@ def update_device(device_id):
 def delete_device(device_id):
     """Delete a device"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("DELETE FROM devices WHERE device_id = %s RETURNING device_id", (device_id,))
-        deleted = cursor.fetchone()
-        
+        with get_db() as (conn, cur):
+            cur.execute("DELETE FROM devices WHERE device_id = %s RETURNING device_id", (device_id,))
+            deleted = cur.fetchone()
+
         if not deleted:
-            cursor.close()
-            conn.close()
             return jsonify({'error': 'Device not found'}), 404
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
+
         return jsonify({'message': 'Device deleted successfully'}), 200
     except Exception as e:
         logger.error(f"Error deleting device: {e}")
@@ -338,25 +327,16 @@ def delete_device(device_id):
 def device_heartbeat(device_id):
     """Update device last seen timestamp"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE device_id = %s RETURNING device_id",
-            (device_id,)
-        )
-        
-        device = cursor.fetchone()
-        
+        with get_db() as (conn, cur):
+            cur.execute(
+                "UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE device_id = %s RETURNING device_id",
+                (device_id,)
+            )
+            device = cur.fetchone()
+
         if not device:
-            cursor.close()
-            conn.close()
             return jsonify({'error': 'Device not found'}), 404
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
+
         return jsonify({'message': 'Heartbeat received'}), 200
     except Exception as e:
         logger.error(f"Error updating heartbeat: {e}")
@@ -368,27 +348,29 @@ def device_heartbeat(device_id):
 def get_device_metrics(device_id):
     """Get time series metrics for a device from InfluxDB"""
     try:
-        # Get query parameters
-        start_time = request.args.get('start', '-1h')  # Default last hour
-        stop_time = request.args.get('stop', 'now()')
+        # Validate / sanitise all values before interpolation
+        device_id = _sanitise_flux_id(device_id, 'device_id')
+        start_time = _sanitise_flux_time(request.args.get('start', '-1h'), 'start')
+        stop_time = _sanitise_flux_time(request.args.get('stop', 'now()'), 'stop')
         metric = request.args.get('metric')
-        
+
         influx_client = get_influx_client()
         query_api = influx_client.query_api()
-        
-        # Build Flux query
+
+        # Build Flux query — all interpolated values are validated above
         flux_query = f'''
         from(bucket: "{INFLUXDB_BUCKET}")
             |> range(start: {start_time}, stop: {stop_time})
             |> filter(fn: (r) => r["_measurement"] == "iot_telemetry")
             |> filter(fn: (r) => r["device_id"] == "{device_id}")
         '''
-        
+
         if metric:
+            metric = _sanitise_flux_id(metric, 'metric')
             flux_query += f'''
             |> filter(fn: (r) => r["metric"] == "{metric}")
             '''
-        
+
         flux_query += '''
             |> sort(columns: ["_time"], desc: false)
         '''
@@ -441,26 +423,21 @@ def get_device_raw_data(device_id):
 def get_device_alerts(device_id):
     """Get alerts for a specific device"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        acknowledged = request.args.get('acknowledged')
-        
-        query = "SELECT * FROM device_alerts WHERE device_id = %s"
-        params = [device_id]
-        
-        if acknowledged is not None:
-            query += " AND acknowledged = %s"
-            params.append(acknowledged.lower() == 'true')
-        
-        query += " ORDER BY created_at DESC"
-        
-        cursor.execute(query, params)
-        alerts = cursor.fetchall()
-        
-        cursor.close()
-        conn.close()
-        
+        with get_db() as (conn, cur):
+            acknowledged = request.args.get('acknowledged')
+
+            query = "SELECT * FROM device_alerts WHERE device_id = %s"
+            params = [device_id]
+
+            if acknowledged is not None:
+                query += " AND acknowledged = %s"
+                params.append(acknowledged.lower() == 'true')
+
+            query += " ORDER BY created_at DESC"
+
+            cur.execute(query, params)
+            alerts = cur.fetchall()
+
         return jsonify(alerts), 200
     except Exception as e:
         logger.error(f"Error fetching alerts: {e}")
@@ -471,27 +448,20 @@ def create_alert(device_id):
     """Create a new alert for a device"""
     try:
         data = request.json
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            """INSERT INTO device_alerts (device_id, alert_type, severity, message) 
-               VALUES (%s, %s, %s, %s) RETURNING *""",
-            (
-                device_id,
-                data.get('alert_type', 'general'),
-                data.get('severity', 'info'),
-                data.get('message', '')
+
+        with get_db() as (conn, cur):
+            cur.execute(
+                """INSERT INTO device_alerts (device_id, alert_type, severity, message) 
+                   VALUES (%s, %s, %s, %s) RETURNING *""",
+                (
+                    device_id,
+                    data.get('alert_type', 'general'),
+                    data.get('severity', 'info'),
+                    data.get('message', '')
+                )
             )
-        )
-        
-        alert = cursor.fetchone()
-        conn.commit()
-        
-        cursor.close()
-        conn.close()
-        
+            alert = cur.fetchone()
+
         return jsonify(alert), 201
     except Exception as e:
         logger.error(f"Error creating alert: {e}")
@@ -501,25 +471,16 @@ def create_alert(device_id):
 def acknowledge_alert(alert_id):
     """Acknowledge an alert"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "UPDATE device_alerts SET acknowledged = TRUE WHERE id = %s RETURNING *",
-            (alert_id,)
-        )
-        
-        alert = cursor.fetchone()
-        
+        with get_db() as (conn, cur):
+            cur.execute(
+                "UPDATE device_alerts SET acknowledged = TRUE WHERE id = %s RETURNING *",
+                (alert_id,)
+            )
+            alert = cur.fetchone()
+
         if not alert:
-            cursor.close()
-            conn.close()
             return jsonify({'error': 'Alert not found'}), 404
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
+
         return jsonify(alert), 200
     except Exception as e:
         logger.error(f"Error acknowledging alert: {e}")
@@ -531,28 +492,20 @@ def acknowledge_alert(alert_id):
 def get_stats():
     """Get overall system statistics"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get device counts by status
-        cursor.execute("""
-            SELECT status, COUNT(*) as count 
-            FROM devices 
-            GROUP BY status
-        """)
-        device_stats = cursor.fetchall()
-        
-        # Get total devices
-        cursor.execute("SELECT COUNT(*) as total FROM devices")
-        total_devices = cursor.fetchone()['total']
-        
-        # Get unacknowledged alerts count
-        cursor.execute("SELECT COUNT(*) as count FROM device_alerts WHERE acknowledged = FALSE")
-        unack_alerts = cursor.fetchone()['count']
-        
-        cursor.close()
-        conn.close()
-        
+        with get_db() as (conn, cur):
+            cur.execute("""
+                SELECT status, COUNT(*) as count 
+                FROM devices 
+                GROUP BY status
+            """)
+            device_stats = cur.fetchall()
+
+            cur.execute("SELECT COUNT(*) as total FROM devices")
+            total_devices = cur.fetchone()['total']
+
+            cur.execute("SELECT COUNT(*) as count FROM device_alerts WHERE acknowledged = FALSE")
+            unack_alerts = cur.fetchone()['count']
+
         return jsonify({
             'total_devices': total_devices,
             'device_by_status': device_stats,
@@ -574,17 +527,12 @@ def get_device_status(device_id):
     See IoT.md §5 — REQ-ONLINE-001.
     """
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            "SELECT device_id, connection_status, last_seen, fw_version FROM devices WHERE device_id = %s",
-            (device_id,)
-        )
-        device = cursor.fetchone()
-
-        cursor.close()
-        conn.close()
+        with get_db() as (conn, cur):
+            cur.execute(
+                "SELECT device_id, connection_status, last_seen, fw_version FROM devices WHERE device_id = %s",
+                (device_id,)
+            )
+            device = cur.fetchone()
 
         if not device:
             return jsonify({'error': 'Device not found'}), 404
@@ -608,30 +556,22 @@ def update_device_status(device_id):
         if connection_status not in ('online', 'offline', 'unknown'):
             return jsonify({'error': 'Invalid connection_status. Must be online, offline, or unknown.'}), 400
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        with get_db() as (conn, cur):
+            update_fields = ["connection_status = %s", "last_seen = CURRENT_TIMESTAMP", "updated_at = CURRENT_TIMESTAMP"]
+            params = [connection_status]
 
-        update_fields = ["connection_status = %s", "last_seen = CURRENT_TIMESTAMP", "updated_at = CURRENT_TIMESTAMP"]
-        params = [connection_status]
+            if 'fw_version' in data:
+                update_fields.append("fw_version = %s")
+                params.append(data['fw_version'])
 
-        if 'fw_version' in data:
-            update_fields.append("fw_version = %s")
-            params.append(data['fw_version'])
+            params.append(device_id)
+            query = f"UPDATE devices SET {', '.join(update_fields)} WHERE device_id = %s RETURNING *"
 
-        params.append(device_id)
-        query = f"UPDATE devices SET {', '.join(update_fields)} WHERE device_id = %s RETURNING *"
-
-        cursor.execute(query, params)
-        device = cursor.fetchone()
+            cur.execute(query, params)
+            device = cur.fetchone()
 
         if not device:
-            cursor.close()
-            conn.close()
             return jsonify({'error': 'Device not found'}), 404
-
-        conn.commit()
-        cursor.close()
-        conn.close()
 
         return jsonify(device), 200
     except Exception as e:
@@ -664,7 +604,7 @@ def send_command(device_id):
             }), 400
 
         cmd_id = str(uuid.uuid4())
-        ts = datetime.utcnow().isoformat() + 'Z'
+        ts = datetime.now(timezone.utc).isoformat()
 
         # Build command payload (IoT.md §6.1)
         command_payload = {
@@ -676,25 +616,19 @@ def send_command(device_id):
         }
 
         # Persist command in DB for tracking
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """INSERT INTO device_commands (cmd_id, device_id, cmd, params, status)
-               VALUES (%s, %s, %s, %s, 'pending') RETURNING *""",
-            (cmd_id, device_id, cmd, json.dumps(params))
-        )
-        command_record = cursor.fetchone()
-        conn.commit()
-        cursor.close()
-        conn.close()
+        with get_db() as (conn, cur):
+            cur.execute(
+                """INSERT INTO device_commands (cmd_id, device_id, cmd, params, status)
+                   VALUES (%s, %s, %s, %s, 'pending') RETURNING *""",
+                (cmd_id, device_id, cmd, json.dumps(params))
+            )
+            command_record = cur.fetchone()
 
         # Publish command to MQTT (IoT.md §3.1)
         topic = f"iot/{device_id}/command"
         try:
-            mqtt_client = get_mqtt_client()
-            result = mqtt_client.publish(topic, json.dumps(command_payload), qos=2)
-            mqtt_client.disconnect()
+            client = get_mqtt_client()
+            result = client.publish(topic, json.dumps(command_payload), qos=2)
             logger.info(f"Published command {cmd_id} to {topic}: {cmd}")
         except Exception as mqtt_err:
             logger.error(f"Failed to publish command to MQTT: {mqtt_err}")
@@ -726,24 +660,19 @@ def get_device_commands(device_id):
     Optional query params: ?status=pending|accepted|rejected
     """
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        with get_db() as (conn, cur):
+            query = "SELECT * FROM device_commands WHERE device_id = %s"
+            params = [device_id]
 
-        query = "SELECT * FROM device_commands WHERE device_id = %s"
-        params = [device_id]
+            status_filter = request.args.get('status')
+            if status_filter:
+                query += " AND status = %s"
+                params.append(status_filter)
 
-        status_filter = request.args.get('status')
-        if status_filter:
-            query += " AND status = %s"
-            params.append(status_filter)
+            query += " ORDER BY created_at DESC"
 
-        query += " ORDER BY created_at DESC"
-
-        cursor.execute(query, params)
-        commands = cursor.fetchall()
-
-        cursor.close()
-        conn.close()
+            cur.execute(query, params)
+            commands = cur.fetchall()
 
         return jsonify(commands), 200
     except Exception as e:
@@ -768,25 +697,17 @@ def acknowledge_command(cmd_id):
         if result not in valid_results:
             return jsonify({'error': f'Invalid result. Must be one of: {sorted(valid_results)}'}), 400
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """UPDATE device_commands 
-               SET status = %s, ack_detail = %s, acked_at = CURRENT_TIMESTAMP
-               WHERE cmd_id = %s RETURNING *""",
-            (result, detail, cmd_id)
-        )
-        command = cursor.fetchone()
+        with get_db() as (conn, cur):
+            cur.execute(
+                """UPDATE device_commands 
+                   SET status = %s, ack_detail = %s, acked_at = CURRENT_TIMESTAMP
+                   WHERE cmd_id = %s RETURNING *""",
+                (result, detail, cmd_id)
+            )
+            command = cur.fetchone()
 
         if not command:
-            cursor.close()
-            conn.close()
             return jsonify({'error': 'Command not found'}), 404
-
-        conn.commit()
-        cursor.close()
-        conn.close()
 
         return jsonify(command), 200
     except Exception as e:

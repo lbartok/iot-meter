@@ -2,7 +2,7 @@ import os
 import json
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 import paho.mqtt.client as mqtt
 from minio import Minio
@@ -219,7 +219,7 @@ class MQTTCollector:
             data = json.loads(payload)
 
             # Update last-seen for any device message (IoT.md §5 REQ-ONLINE-001)
-            self._device_last_seen[device_id] = datetime.utcnow().isoformat()
+            self._device_last_seen[device_id] = datetime.now(timezone.utc).isoformat()
 
             # v2 deduplication by (device_id, seq)
             seq = data.get('seq', -1)
