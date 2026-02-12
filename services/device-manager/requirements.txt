@@ -5,3 +5,5 @@ influxdb-client==1.50.0
 minio==7.2.20
 gunicorn==25.0.3
 paho-mqtt==2.1.0
+prometheus-flask-instrumentator==7.0.2
+prometheus-client==0.22.1

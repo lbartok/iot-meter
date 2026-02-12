@@ -16,6 +16,11 @@ This system implements a scalable IoT solution with the following components:
 6. **Device Manager API** - REST API for device management and data access
 7. **IoT Device Simulator** - Simulates multiple IoT devices for testing
 
+### Observability Services
+
+8. **Prometheus** - Metrics collection, storage, and querying (90-day retention, OTLP receiver)
+9. **kube-state-metrics** - Exports Kubernetes cluster state (pod crashes, deployment health, PDB status)
+
 ### Data Flow
 
 ```mermaid
@@ -75,6 +80,36 @@ flowchart LR
     Client <-- "HTTP" --> REST
 ```
 
+### Observability Layer
+
+```mermaid
+flowchart LR
+    subgraph OPS["Observability Stack"]
+        direction TB
+        Prom["Prometheus<br/>v3.4 · 90-day retention"]
+        KSM["kube-state-metrics<br/>v2.15"]
+    end
+
+    subgraph Targets["Scrape Targets"]
+        DM_M["/metrics<br/>device-manager:8080"]
+        MC_M["/metrics<br/>mqtt-collector:8081"]
+        K8S["K8s API<br/>(pods, deploys, PDBs)"]
+    end
+
+    Prom -- "scrape 10s" --> DM_M
+    Prom -- "scrape 10s" --> MC_M
+    Prom -- "scrape 30s" --> KSM
+    KSM -- "watch" --> K8S
+
+    style OPS fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
+    style Prom fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    style KSM fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    style Targets fill:#fff3e0,stroke:#ef6c00,stroke-width:1px,color:#e65100
+    style DM_M fill:#ffe0b2,stroke:#ef6c00,color:#e65100
+    style MC_M fill:#ffe0b2,stroke:#ef6c00,color:#e65100
+    style K8S fill:#ffe0b2,stroke:#ef6c00,color:#e65100
+```
+
 ## Quick Start
 
 ### Prerequisites
@@ -122,6 +157,7 @@ docker-compose down -v
 | Service | URL/Port | Credentials |
 |---------|----------|-------------|
 | Device Manager API | http://localhost:8080 | N/A |
+| Prometheus UI | http://localhost:9091 | N/A |
 | MinIO Console | http://localhost:9090 | minioadmin / minioadmin123 |
 | InfluxDB UI | http://localhost:8086 | admin / adminpassword |
 | PostgreSQL | localhost:5432 | iot_user / iot_password |
@@ -380,7 +416,78 @@ Time series metrics are stored in InfluxDB:
 
 Access the InfluxDB UI at http://localhost:8086 to query and visualize data.
 
-## Monitoring and Troubleshooting
+## Monitoring and Observability
+
+### Prometheus Metrics
+
+Both application services expose a `/metrics` endpoint in the [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/).
+
+| Service | Metrics URL | Scrape Interval |
+|---------|------------|-----------------|
+| Device Manager API | `http://localhost:8080/metrics` | 10 s |
+| MQTT Collector | `http://localhost:8081/metrics` (health port) | 10 s |
+| Prometheus self | `http://localhost:9091/metrics` | 15 s |
+
+#### Device Manager Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `http_request_duration_seconds_*` | Histogram | Auto-instrumented HTTP request latencies |
+| `http_requests_total` | Counter | Auto-instrumented HTTP request count by method, status, handler |
+| `device_manager_mqtt_commands_total` | Counter | MQTT commands published (labels: `cmd`, `status`) |
+| `device_manager_influxdb_query_duration_seconds` | Histogram | InfluxDB Flux query latency |
+| `device_manager_minio_list_duration_seconds` | Histogram | MinIO object listing latency |
+| `device_manager_devices_total` | Gauge | Registered devices by status (refreshed on `/api/stats`) |
+| `device_manager_alerts_unacknowledged` | Gauge | Unacknowledged alert count |
+| `device_manager_info` | Info | Service version metadata |
+
+#### MQTT Collector Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `mqtt_collector_messages_received_total` | Counter | Messages received by topic suffix |
+| `mqtt_collector_messages_processed_total` | Counter | Messages successfully processed |
+| `mqtt_collector_messages_errors_total` | Counter | Processing errors by type (`json_decode`, `processing`, `minio_store`, `influxdb_write`) |
+| `mqtt_collector_duplicates_dropped_total` | Counter | Duplicate messages dropped by dedup |
+| `mqtt_collector_sequence_gaps_total` | Counter | Sequence number gaps detected |
+| `mqtt_collector_minio_store_duration_seconds` | Histogram | MinIO put_object latency |
+| `mqtt_collector_influxdb_write_duration_seconds` | Histogram | InfluxDB write latency |
+| `mqtt_collector_mqtt_connected` | Gauge | MQTT broker connection state (1 = connected) |
+| `mqtt_collector_minio_ready` | Gauge | MinIO readiness state |
+| `mqtt_collector_influxdb_ready` | Gauge | InfluxDB readiness state |
+| `mqtt_collector_devices_seen` | Gauge | Unique devices seen since startup |
+| `mqtt_collector_info` | Info | Service version metadata |
+
+#### kube-state-metrics (Kubernetes only)
+
+In K8s deployments, [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics) v2.15 exposes cluster state including:
+
+- **Pod crash details**: `kube_pod_container_status_restarts_total`, `kube_pod_container_status_terminated_reason`
+- **Deployment health**: `kube_deployment_status_replicas_available`, `kube_deployment_status_replicas_unavailable`
+- **PDB status**: `kube_poddisruptionbudget_status_current_healthy`
+- **Resource pressure**: `kube_pod_container_resource_requests`, `kube_pod_container_resource_limits`
+
+### Prometheus Access
+
+```bash
+# Docker Compose — Prometheus UI
+open http://localhost:9091
+
+# Kubernetes — port-forward Prometheus
+kubectl port-forward svc/prometheus 9091:9090 -n iot-meter
+```
+
+### Data Retention
+
+Prometheus is configured with **90-day data retention** (`--storage.tsdb.retention.time=90d`).
+This provides a rolling 3-month window of all endpoint latencies, error rates, message throughput,
+and K8s pod health for post-incident analysis.
+
+### OpenTelemetry
+
+Prometheus v3.4+ includes a native **OTLP receiver** (`--web.enable-otlp-receiver`), enabled by default in this deployment. Applications or sidecars that speak OpenTelemetry Protocol can push metrics directly to Prometheus at `http://prometheus:9090/api/v1/otlp/v1/metrics`. The application services currently use the `prometheus_client` / `prometheus_flask_instrumentator` libraries for Prometheus-native instrumentation, which is the most battle-tested approach for Python + Flask. The OTLP receiver is available for future integration with OTel-instrumented services or distributed tracing exporters.
+
+## Troubleshooting
 
 ### View service logs
 
@@ -556,16 +663,16 @@ python -m pytest tests/unit tests/integration --cov=services --cov-report=html
 
 ### Test Results
 
-The latest test run produced the following results (146 tests):
+The latest test run produced the following results (162 tests):
 
 ```
-tests/unit/test_device_manager.py    — 50 passed
-tests/unit/test_mqtt_collector.py    — 31 passed
+tests/unit/test_device_manager.py    — 56 passed  (incl. 6 Prometheus /metrics tests)
+tests/unit/test_mqtt_collector.py    — 37 passed  (incl. 6 Prometheus /metrics tests)
 tests/unit/test_simulator.py         — 35 passed
 tests/integration/test_integration.py — 10 passed
 tests/e2e/test_e2e.py               — 20 tests (require running infrastructure)
 
-Total: 126 passed (unit + integration), e2e requires running services
+Total: 138 passed (unit + integration), e2e requires running services
 ```
 
 > E2E tests are skipped automatically when the target services are not reachable.

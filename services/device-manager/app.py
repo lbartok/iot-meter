@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from influxdb_client import InfluxDBClient
 from minio import Minio
 import paho.mqtt.client as mqtt
+from prometheus_flask_instrumentator import Instrumentator
+from prometheus_client import Counter, Histogram, Gauge, Info
 
 # Configure logging
 logging.basicConfig(
@@ -23,6 +25,49 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+# Auto-instrument all Flask HTTP endpoints (request count, latency, size)
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    excluded_handlers=['/metrics'],
+)
+instrumentator.instrument(app).expose(app, endpoint='/metrics')
+
+# Custom business metrics
+SERVICE_INFO = Info('device_manager', 'Device Manager service information')
+SERVICE_INFO.info({'version': '2.0', 'service': 'device-manager'})
+
+DB_POOL_SIZE = Gauge(
+    'device_manager_db_pool_size', 'Current DB connection pool size (max)',
+)
+DB_POOL_USED = Gauge(
+    'device_manager_db_pool_used', 'DB connections currently checked out',
+)
+MQTT_COMMANDS_SENT = Counter(
+    'device_manager_mqtt_commands_total',
+    'Total MQTT commands published to devices',
+    ['cmd', 'status'],
+)
+INFLUX_QUERY_DURATION = Histogram(
+    'device_manager_influxdb_query_duration_seconds',
+    'Time spent querying InfluxDB',
+    buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+)
+MINIO_LIST_DURATION = Histogram(
+    'device_manager_minio_list_duration_seconds',
+    'Time spent listing MinIO objects',
+    buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+)
+DEVICES_TOTAL = Gauge(
+    'device_manager_devices_total', 'Number of registered devices', ['status'],
+)
+ALERTS_UNACKNOWLEDGED = Gauge(
+    'device_manager_alerts_unacknowledged', 'Unacknowledged alerts count',
+)
 
 # Database configuration
 DB_CONFIG = {
@@ -397,7 +442,8 @@ def get_device_metrics(device_id):
             |> sort(columns: ["_time"], desc: false)
         '''
         
-        result = query_api.query(flux_query, org=INFLUXDB_ORG)
+        with INFLUX_QUERY_DURATION.time():
+            result = query_api.query(flux_query, org=INFLUXDB_ORG)
         
         # Format results
         metrics = []
@@ -431,9 +477,10 @@ def get_device_raw_data(device_id):
         full_prefix = f"{device_id}/{sub_prefix}"
 
         # List objects with device_id prefix
-        objects = minio_client.list_objects(
-            MINIO_BUCKET, prefix=full_prefix, recursive=True,
-        )
+        with MINIO_LIST_DURATION.time():
+            objects = minio_client.list_objects(
+                MINIO_BUCKET, prefix=full_prefix, recursive=True,
+            )
 
         files = []
         for obj in objects:
@@ -538,6 +585,11 @@ def get_stats():
 
             cur.execute("SELECT COUNT(*) as count FROM device_alerts WHERE acknowledged = FALSE")
             unack_alerts = cur.fetchone()['count']
+
+        # Update Prometheus gauges so /metrics always reflects latest state
+        for row in device_stats:
+            DEVICES_TOTAL.labels(status=row['status']).set(row['count'])
+        ALERTS_UNACKNOWLEDGED.set(unack_alerts)
 
         return jsonify({
             'total_devices': total_devices,
@@ -662,8 +714,10 @@ def send_command(device_id):
         try:
             client = get_mqtt_client()
             result = client.publish(topic, json.dumps(command_payload), qos=2)
+            MQTT_COMMANDS_SENT.labels(cmd=cmd, status='published').inc()
             logger.info(f"Published command {cmd_id} to {topic}: {cmd}")
         except Exception as mqtt_err:
+            MQTT_COMMANDS_SENT.labels(cmd=cmd, status='failed').inc()
             logger.error(f"Failed to publish command to MQTT: {mqtt_err}")
             # Command is still persisted in DB with 'pending' status
             return jsonify({

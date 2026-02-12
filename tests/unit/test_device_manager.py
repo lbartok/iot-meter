@@ -746,3 +746,57 @@ class TestAcknowledgeCommand:
             content_type='application/json',
         )
         assert resp.status_code == 404
+
+
+# ===================================================================
+# Prometheus Metrics Endpoint
+# ===================================================================
+
+class TestPrometheusMetrics:
+    """Tests for /metrics Prometheus endpoint."""
+
+    def test_metrics_endpoint_returns_200(self, dm_client):
+        """The /metrics endpoint must be reachable and return 200."""
+        resp = dm_client.get('/metrics')
+        assert resp.status_code == 200
+
+    def test_metrics_content_type(self, dm_client):
+        """The response must use the Prometheus text exposition format."""
+        resp = dm_client.get('/metrics')
+        assert 'text/plain' in resp.content_type or 'text/plain' in resp.headers.get('Content-Type', '')
+
+    def test_metrics_contains_http_request_metrics(self, dm_client):
+        """Auto-instrumented HTTP metrics should appear after a request."""
+        # Make a request first to generate metrics
+        dm_client.get('/health')
+        resp = dm_client.get('/metrics')
+        body = resp.data.decode('utf-8')
+        # prometheus_flask_instrumentator exposes these families
+        assert 'http_request_duration' in body or 'http_requests' in body
+
+    def test_metrics_contains_service_info(self, dm_client):
+        """Custom service info metric should be present."""
+        resp = dm_client.get('/metrics')
+        body = resp.data.decode('utf-8')
+        assert 'device_manager_info' in body
+
+    def test_metrics_contains_custom_business_metrics(self, dm_client):
+        """Custom business metric families should be registered."""
+        resp = dm_client.get('/metrics')
+        body = resp.data.decode('utf-8')
+        assert 'device_manager_mqtt_commands_total' in body or 'device_manager_influxdb_query_duration' in body
+
+    @patch('app.get_db_connection')
+    def test_stats_updates_prometheus_gauges(self, mock_conn, dm_client):
+        """GET /api/stats should refresh Prometheus device/alert gauges."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [{'status': 'active', 'count': 3}]
+        mock_cursor.fetchone.side_effect = [{'total': 3}, {'count': 1}]
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.get('/api/stats')
+        assert resp.status_code == 200
+
+        metrics_resp = dm_client.get('/metrics')
+        body = metrics_resp.data.decode('utf-8')
+        assert 'device_manager_devices_total' in body

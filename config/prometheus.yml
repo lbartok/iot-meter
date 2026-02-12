@@ -1,0 +1,31 @@
+# Prometheus configuration for IoT Meter platform
+# Retention: 90 days (set via --storage.tsdb.retention.time=90d CLI flag)
+
+global:
+  scrape_interval: 15s        # Default scrape interval
+  evaluation_interval: 15s    # Rule evaluation interval
+  scrape_timeout: 10s
+
+# -----------------------------------------------------------------------
+# Scrape targets
+# -----------------------------------------------------------------------
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Device Manager REST API — exposes /metrics via prometheus_flask_instrumentator
+  - job_name: 'device-manager'
+    metrics_path: /metrics
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['device-manager:8080']
+
+  # MQTT Collector — exposes /metrics on health port 8081
+  - job_name: 'mqtt-collector'
+    metrics_path: /metrics
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['mqtt-collector:8081']

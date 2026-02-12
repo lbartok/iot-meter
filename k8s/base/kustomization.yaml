@@ -16,3 +16,5 @@ resources:
   - mqtt-collector.yaml
   - iot-simulator.yaml
   - pod-disruption-budgets.yaml
+  - prometheus.yaml
+  - kube-state-metrics.yaml

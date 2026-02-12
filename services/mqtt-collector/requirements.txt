@@ -2,3 +2,4 @@ paho-mqtt==2.1.0
 minio==7.2.20
 influxdb-client==1.50.0
 flask==3.1.2
+prometheus-client==0.22.1

@@ -192,6 +192,35 @@ services:
       - iot-network
     restart: unless-stopped
 
+  # Prometheus (Metrics collection and storage — 90-day retention)
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    container_name: iot-prometheus
+    ports:
+      - "9091:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=90d'
+      - '--web.enable-otlp-receiver'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      device-manager:
+        condition: service_started
+    networks:
+      - iot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "promtool", "check", "healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   iot-network:
     driver: bridge
@@ -202,3 +231,4 @@ volumes:
   minio-data:
   influxdb-data:
   postgres-data:
+  prometheus-data:

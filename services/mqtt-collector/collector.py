@@ -9,6 +9,7 @@ from minio import Minio
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 from flask import Flask, jsonify
+from prometheus_client import Counter, Histogram, Gauge, Info, generate_latest, CONTENT_TYPE_LATEST
 import logging
 
 # Configure logging
@@ -21,6 +22,58 @@ logger = logging.getLogger(__name__)
 # Health check Flask app
 health_app = Flask(__name__)
 collector_instance = None
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+COLLECTOR_INFO = Info('mqtt_collector', 'MQTT Collector service information')
+COLLECTOR_INFO.info({'version': '2.0', 'service': 'mqtt-collector'})
+
+MQTT_MESSAGES_RECEIVED = Counter(
+    'mqtt_collector_messages_received_total',
+    'Total MQTT messages received',
+    ['topic_suffix'],
+)
+MQTT_MESSAGES_PROCESSED = Counter(
+    'mqtt_collector_messages_processed_total',
+    'Total MQTT messages successfully processed',
+    ['topic_suffix'],
+)
+MQTT_MESSAGES_ERRORS = Counter(
+    'mqtt_collector_messages_errors_total',
+    'Total MQTT message processing errors',
+    ['error_type'],
+)
+MQTT_DUPLICATES_DROPPED = Counter(
+    'mqtt_collector_duplicates_dropped_total',
+    'Total duplicate messages dropped by dedup',
+)
+MINIO_STORE_DURATION = Histogram(
+    'mqtt_collector_minio_store_duration_seconds',
+    'Time spent storing objects to MinIO',
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
+)
+INFLUXDB_WRITE_DURATION = Histogram(
+    'mqtt_collector_influxdb_write_duration_seconds',
+    'Time spent writing points to InfluxDB',
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
+)
+MQTT_CONNECTED_GAUGE = Gauge(
+    'mqtt_collector_mqtt_connected', 'Whether MQTT broker connection is active (1=yes)',
+)
+MINIO_READY_GAUGE = Gauge(
+    'mqtt_collector_minio_ready', 'Whether MinIO is ready (1=yes)',
+)
+INFLUXDB_READY_GAUGE = Gauge(
+    'mqtt_collector_influxdb_ready', 'Whether InfluxDB is ready (1=yes)',
+)
+DEVICES_SEEN = Gauge(
+    'mqtt_collector_devices_seen', 'Number of unique devices seen since startup',
+)
+SEQ_GAPS_DETECTED = Counter(
+    'mqtt_collector_sequence_gaps_total',
+    'Total sequence number gaps detected',
+)
 
 
 @health_app.route('/healthz', methods=['GET'])
@@ -35,6 +88,19 @@ def readiness():
     if collector_instance and collector_instance.is_ready():
         return jsonify({'status': 'ready', 'service': 'mqtt-collector'}), 200
     return jsonify({'status': 'not ready', 'service': 'mqtt-collector'}), 503
+
+
+@health_app.route('/metrics', methods=['GET'])
+def metrics():
+    """Prometheus metrics endpoint."""
+    # Update connection-state gauges before scrape
+    if collector_instance:
+        MQTT_CONNECTED_GAUGE.set(1 if collector_instance.mqtt_connected else 0)
+        MINIO_READY_GAUGE.set(1 if collector_instance.minio_ready else 0)
+        INFLUXDB_READY_GAUGE.set(1 if collector_instance.influxdb_ready else 0)
+        DEVICES_SEEN.set(len(collector_instance._device_last_seen))
+    from flask import Response
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 
 # -----------------------------------------------------------------------
@@ -199,6 +265,7 @@ class MQTTCollector:
 
             if last_seq >= 0 and seq > last_seq + 1:
                 gap = seq - last_seq - 1
+                SEQ_GAPS_DETECTED.inc()
                 logger.warning(f"Sequence gap detected for {device_id}: expected {last_seq + 1}, got {seq} (gap={gap})")
 
             self._seq_tracker[device_id] = seq
@@ -232,7 +299,10 @@ class MQTTCollector:
             seq = data.get('seq', -1)
             msg_type = data.get('msg_type')
 
+            MQTT_MESSAGES_RECEIVED.labels(topic_suffix=topic_suffix).inc()
+
             if msg_type and self.is_duplicate(device_id, seq):
+                MQTT_DUPLICATES_DROPPED.inc()
                 return  # Drop duplicate
 
             logger.info(f"Received {topic_suffix} from {device_id} (seq={seq})")
@@ -251,9 +321,13 @@ class MQTTCollector:
                 # Fallback: treat as generic telemetry (backward compat)
                 self.handle_telemetry(device_id, data)
 
+            MQTT_MESSAGES_PROCESSED.labels(topic_suffix=topic_suffix).inc()
+
         except json.JSONDecodeError as e:
+            MQTT_MESSAGES_ERRORS.labels(error_type='json_decode').inc()
             logger.error(f"Failed to parse JSON message: {e}")
         except Exception as e:
+            MQTT_MESSAGES_ERRORS.labels(error_type='processing').inc()
             logger.error(f"Error processing message: {e}")
 
     # -------------------------------------------------------------------
@@ -313,15 +387,17 @@ class MQTTCollector:
             }, indent=2)
             json_bytes = json_data.encode('utf-8')
 
-            self.minio_client.put_object(
-                self.minio_bucket,
-                filename,
-                data=BytesIO(json_bytes),
-                length=len(json_bytes),
-                content_type='application/json'
-            )
+            with MINIO_STORE_DURATION.time():
+                self.minio_client.put_object(
+                    self.minio_bucket,
+                    filename,
+                    data=BytesIO(json_bytes),
+                    length=len(json_bytes),
+                    content_type='application/json'
+                )
             logger.info(f"Stored {msg_category} to MinIO: {filename}")
         except Exception as e:
+            MQTT_MESSAGES_ERRORS.labels(error_type='minio_store').inc()
             logger.error(f"Failed to store data to MinIO: {e}")
 
     def store_to_influxdb(self, device_id, data):
@@ -347,11 +423,12 @@ class MQTTCollector:
                             .time(m_ts)
                         if m.get('unit'):
                             point = point.tag("unit", m['unit'])
-                        self.write_api.write(
-                            bucket=self.influxdb_bucket,
-                            org=self.influxdb_org,
-                            record=point,
-                        )
+                        with INFLUXDB_WRITE_DURATION.time():
+                            self.write_api.write(
+                                bucket=self.influxdb_bucket,
+                                org=self.influxdb_org,
+                                record=point,
+                            )
                 logger.info(f"Stored {len(measurements)} measurements to InfluxDB for {device_id}")
                 return
 
@@ -366,13 +443,15 @@ class MQTTCollector:
                         .tag("metric", key) \
                         .field("value", float(value)) \
                         .time(timestamp)
-                    self.write_api.write(
-                        bucket=self.influxdb_bucket,
-                        org=self.influxdb_org,
-                        record=point,
-                    )
+                    with INFLUXDB_WRITE_DURATION.time():
+                        self.write_api.write(
+                            bucket=self.influxdb_bucket,
+                            org=self.influxdb_org,
+                            record=point,
+                        )
             logger.info(f"Stored v1 data to InfluxDB for device {device_id}")
         except Exception as e:
+            MQTT_MESSAGES_ERRORS.labels(error_type='influxdb_write').inc()
             logger.error(f"Failed to store data to InfluxDB: {e}")
 
     def run(self):

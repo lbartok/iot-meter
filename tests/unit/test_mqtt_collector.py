@@ -531,3 +531,49 @@ class TestLastSeenTracking:
 
         collector.on_message(MagicMock(), None, msg)
         assert 'dc-meter-007' in collector._device_last_seen
+
+
+# ===================================================================
+# Prometheus Metrics Endpoint
+# ===================================================================
+
+class TestCollectorPrometheusMetrics:
+    """Tests for /metrics Prometheus endpoint on the collector health app."""
+
+    def test_metrics_endpoint_returns_200(self, collector_health_client):
+        """The /metrics endpoint must be reachable and return 200."""
+        resp = collector_health_client.get('/metrics')
+        assert resp.status_code == 200
+
+    def test_metrics_content_type(self, collector_health_client):
+        """The response must use the Prometheus text exposition format."""
+        resp = collector_health_client.get('/metrics')
+        content_type = resp.content_type or resp.headers.get('Content-Type', '')
+        assert 'text/plain' in content_type or 'text/openmetrics' in content_type
+
+    def test_metrics_contains_collector_info(self, collector_health_client):
+        """Custom service info metric should be present."""
+        resp = collector_health_client.get('/metrics')
+        body = resp.data.decode('utf-8')
+        assert 'mqtt_collector_info' in body
+
+    def test_metrics_contains_message_counters(self, collector_health_client):
+        """MQTT message counter families should be registered."""
+        resp = collector_health_client.get('/metrics')
+        body = resp.data.decode('utf-8')
+        assert 'mqtt_collector_messages_received_total' in body
+
+    def test_metrics_contains_storage_histograms(self, collector_health_client):
+        """MinIO and InfluxDB duration histogram families should be registered."""
+        resp = collector_health_client.get('/metrics')
+        body = resp.data.decode('utf-8')
+        assert 'mqtt_collector_minio_store_duration_seconds' in body
+        assert 'mqtt_collector_influxdb_write_duration_seconds' in body
+
+    def test_metrics_contains_connection_gauges(self, collector_health_client):
+        """Connection-state gauges should be present."""
+        resp = collector_health_client.get('/metrics')
+        body = resp.data.decode('utf-8')
+        assert 'mqtt_collector_mqtt_connected' in body
+        assert 'mqtt_collector_minio_ready' in body
+        assert 'mqtt_collector_influxdb_ready' in body

@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all setup-hooks perf-test perf-test-api perf-test-mqtt
+.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all setup-hooks perf-test perf-test-api perf-test-mqtt prom-open prom-targets prom-logs k8s-port-forward-prom
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -219,3 +219,18 @@ perf-test-api: ## Run k6 API load test only
 
 perf-test-mqtt: ## Run k6 MQTT/dashboard load test only
 	k6 run tests/performance/mqtt_publish_test.js
+
+# ─── Prometheus / Observability ───────────────────────────────────────
+
+prom-open: ## Open Prometheus UI in browser (Docker Compose)
+	@echo "Opening Prometheus at http://localhost:9091 ..."
+	@open http://localhost:9091 2>/dev/null || xdg-open http://localhost:9091 2>/dev/null || echo "Visit http://localhost:9091"
+
+prom-targets: ## Show Prometheus scrape target status
+	@curl -s http://localhost:9091/api/v1/targets | python3 -m json.tool 2>/dev/null || echo "Prometheus not reachable at localhost:9091"
+
+prom-logs: ## Show Prometheus container logs
+	docker-compose logs -f prometheus
+
+k8s-port-forward-prom: ## Port-forward Prometheus to localhost:9091 (K8s)
+	kubectl port-forward svc/prometheus 9091:9090 -n $(K8S_NAMESPACE)
