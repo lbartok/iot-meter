@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward test-unit test-integration test-e2e test-all
+.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward prod-deploy prod-status prod-secrets prod-rollback prod-logs test-unit test-integration test-e2e test-all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -109,11 +109,11 @@ k8s-build: ## Build Docker images for Kubernetes
 	docker build -t $(REGISTRY)/mqtt-collector:latest ./services/mqtt-collector
 	docker build -t $(REGISTRY)/iot-device-simulator:latest ./services/iot-device-simulator
 
-k8s-deploy: ## Deploy all services to Kubernetes
-	kubectl apply -k k8s/
+k8s-deploy: ## Deploy all services to Kubernetes (local dev)
+	kubectl apply -k k8s/base/
 
-k8s-delete: ## Delete all Kubernetes resources
-	kubectl delete -k k8s/
+k8s-delete: ## Delete all Kubernetes resources (local dev)
+	kubectl delete -k k8s/base/
 
 k8s-status: ## Show status of Kubernetes pods
 	kubectl get pods -n $(K8S_NAMESPACE)
@@ -131,6 +131,60 @@ k8s-logs-simulator: ## Show logs from IoT simulator pod
 
 k8s-port-forward: ## Port-forward Device Manager API to localhost:8080
 	kubectl port-forward svc/device-manager 8080:8080 -n $(K8S_NAMESPACE)
+
+# ==================== Production Targets ====================
+
+prod-deploy: ## Deploy to production (k3s)
+	@echo "Deploying to production..."
+	sudo kubectl apply -k k8s/overlays/production/
+	@echo ""
+	@echo "Waiting for rollouts..."
+	@for deploy in postgres minio influxdb mosquitto device-manager mqtt-collector; do \
+		echo "  Waiting for $$deploy..."; \
+		sudo kubectl rollout status deployment/$$deploy -n $(K8S_NAMESPACE) --timeout=180s; \
+	done
+	@echo ""
+	@echo "✅ Production deployment complete"
+
+prod-status: ## Show production pod, service, and volume status
+	@echo "=== Pods ==="
+	sudo kubectl get pods -n $(K8S_NAMESPACE) -o wide
+	@echo ""
+	@echo "=== Services ==="
+	sudo kubectl get svc -n $(K8S_NAMESPACE)
+	@echo ""
+	@echo "=== Persistent Volumes ==="
+	sudo kubectl get pv,pvc -n $(K8S_NAMESPACE)
+
+prod-secrets: ## Create production secrets from environment variables
+	@echo "Creating production secrets..."
+	@echo "Required env vars: DB_PASSWORD, INFLUXDB_TOKEN, INFLUXDB_ADMIN_PASSWORD, MINIO_ROOT_PASSWORD"
+	sudo kubectl create secret generic iot-meter-secrets \
+		--namespace=$(K8S_NAMESPACE) \
+		--from-literal=DB_USER="$${DB_USER:-iot_user}" \
+		--from-literal=DB_PASSWORD="$$DB_PASSWORD" \
+		--from-literal=POSTGRES_DB="$${POSTGRES_DB:-iot_devices}" \
+		--from-literal=POSTGRES_USER="$${DB_USER:-iot_user}" \
+		--from-literal=POSTGRES_PASSWORD="$$DB_PASSWORD" \
+		--from-literal=INFLUXDB_TOKEN="$$INFLUXDB_TOKEN" \
+		--from-literal=DOCKER_INFLUXDB_INIT_USERNAME="$${INFLUXDB_ADMIN_USER:-admin}" \
+		--from-literal=DOCKER_INFLUXDB_INIT_PASSWORD="$$INFLUXDB_ADMIN_PASSWORD" \
+		--from-literal=DOCKER_INFLUXDB_INIT_ADMIN_TOKEN="$$INFLUXDB_TOKEN" \
+		--from-literal=MINIO_ACCESS_KEY="$${MINIO_ROOT_USER:-minioadmin}" \
+		--from-literal=MINIO_SECRET_KEY="$$MINIO_ROOT_PASSWORD" \
+		--from-literal=MINIO_ROOT_USER="$${MINIO_ROOT_USER:-minioadmin}" \
+		--from-literal=MINIO_ROOT_PASSWORD="$$MINIO_ROOT_PASSWORD" \
+		--dry-run=client -o yaml | sudo kubectl apply -f -
+	@echo "✅ Secrets created/updated"
+
+prod-rollback: ## Rollback a production deployment (usage: make prod-rollback DEPLOY=device-manager)
+	@if [ -z "$(DEPLOY)" ]; then echo "Usage: make prod-rollback DEPLOY=<deployment-name>"; exit 1; fi
+	sudo kubectl rollout undo deployment/$(DEPLOY) -n $(K8S_NAMESPACE)
+	@echo "✅ Rolled back $(DEPLOY)"
+
+prod-logs: ## Show production logs (usage: make prod-logs APP=device-manager)
+	@if [ -z "$(APP)" ]; then echo "Usage: make prod-logs APP=<app-name>"; exit 1; fi
+	sudo kubectl logs -f -l app=$(APP) -n $(K8S_NAMESPACE)
 
 # ==================== Test Targets ====================
 

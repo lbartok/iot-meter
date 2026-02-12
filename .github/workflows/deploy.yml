@@ -1,0 +1,191 @@
+name: Build, Test & Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_simulator:
+        description: "Deploy the IoT device simulator"
+        required: false
+        type: boolean
+        default: true
+
+env:
+  K8S_NAMESPACE: iot-meter
+  REGISTRY: iot-meter
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Stage 1: Build Docker images
+  # ──────────────────────────────────────────────────────────────
+  build:
+    name: Build Images
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build device-manager image
+        run: docker build -t ${{ env.REGISTRY }}/device-manager:latest ./services/device-manager
+
+      - name: Build mqtt-collector image
+        run: docker build -t ${{ env.REGISTRY }}/mqtt-collector:latest ./services/mqtt-collector
+
+      - name: Build iot-device-simulator image
+        run: docker build -t ${{ env.REGISTRY }}/iot-device-simulator:latest ./services/iot-device-simulator
+
+      - name: Import images into k3s containerd
+        run: |
+          docker save ${{ env.REGISTRY }}/device-manager:latest | sudo k3s ctr images import -
+          docker save ${{ env.REGISTRY }}/mqtt-collector:latest | sudo k3s ctr images import -
+          docker save ${{ env.REGISTRY }}/iot-device-simulator:latest | sudo k3s ctr images import -
+
+  # ──────────────────────────────────────────────────────────────
+  # Stage 2: Run tests (gate deployment)
+  # ──────────────────────────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: self-hosted
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+          pip install -r services/device-manager/requirements.txt
+          pip install -r services/mqtt-collector/requirements.txt
+          pip install -r services/iot-device-simulator/requirements.txt
+
+      - name: Run unit & integration tests
+        run: |
+          python -m pytest tests/unit tests/integration -v --tb=short \
+            --cov=services --cov-report=term-missing \
+            --junitxml=test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.xml
+
+  # ──────────────────────────────────────────────────────────────
+  # Stage 3: Deploy to production k3s cluster
+  # ──────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Production
+    runs-on: self-hosted
+    needs: test
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine simulator replicas
+        run: |
+          # workflow_dispatch input takes priority, then vars, default true
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            SIMULATOR="${{ github.event.inputs.deploy_simulator }}"
+          else
+            SIMULATOR="${{ vars.DEPLOY_SIMULATOR || 'true' }}"
+          fi
+
+          if [[ "$SIMULATOR" == "true" ]]; then
+            REPLICAS=1
+          else
+            REPLICAS=0
+          fi
+
+          echo "SIMULATOR_REPLICAS=$REPLICAS" >> "$GITHUB_ENV"
+          echo "Simulator replicas: $REPLICAS"
+
+      - name: Write simulator replicas patch
+        run: |
+          cat > k8s/overlays/production/patches/simulator-replicas.yaml <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: iot-simulator
+            namespace: iot-meter
+          spec:
+            replicas: ${{ env.SIMULATOR_REPLICAS }}
+          EOF
+
+      - name: Create data directories
+        run: |
+          sudo mkdir -p /opt/iot-meter/data/{postgres,minio,influxdb,mosquitto}
+          sudo chown -R 1000:1000 /opt/iot-meter/data
+
+      - name: Create Kubernetes secrets
+        run: |
+          sudo kubectl create secret generic iot-meter-secrets \
+            --namespace=${{ env.K8S_NAMESPACE }} \
+            --from-literal=DB_USER="${{ secrets.DB_USER || 'iot_user' }}" \
+            --from-literal=DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+            --from-literal=POSTGRES_DB="${{ secrets.POSTGRES_DB || 'iot_devices' }}" \
+            --from-literal=POSTGRES_USER="${{ secrets.DB_USER || 'iot_user' }}" \
+            --from-literal=POSTGRES_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+            --from-literal=INFLUXDB_TOKEN="${{ secrets.INFLUXDB_TOKEN }}" \
+            --from-literal=DOCKER_INFLUXDB_INIT_USERNAME="${{ secrets.INFLUXDB_ADMIN_USER || 'admin' }}" \
+            --from-literal=DOCKER_INFLUXDB_INIT_PASSWORD="${{ secrets.INFLUXDB_ADMIN_PASSWORD }}" \
+            --from-literal=DOCKER_INFLUXDB_INIT_ADMIN_TOKEN="${{ secrets.INFLUXDB_TOKEN }}" \
+            --from-literal=MINIO_ACCESS_KEY="${{ secrets.MINIO_ROOT_USER || 'minioadmin' }}" \
+            --from-literal=MINIO_SECRET_KEY="${{ secrets.MINIO_ROOT_PASSWORD }}" \
+            --from-literal=MINIO_ROOT_USER="${{ secrets.MINIO_ROOT_USER || 'minioadmin' }}" \
+            --from-literal=MINIO_ROOT_PASSWORD="${{ secrets.MINIO_ROOT_PASSWORD }}" \
+            --dry-run=client -o yaml | sudo kubectl apply -f -
+
+      - name: Apply production overlay
+        run: sudo kubectl apply -k k8s/overlays/production/
+
+      - name: Wait for rollouts
+        run: |
+          for deploy in postgres minio influxdb mosquitto device-manager mqtt-collector; do
+            echo "Waiting for $deploy..."
+            sudo kubectl rollout status deployment/$deploy \
+              -n ${{ env.K8S_NAMESPACE }} --timeout=180s
+          done
+
+          # Wait for simulator only if enabled
+          if [[ "${{ env.SIMULATOR_REPLICAS }}" == "1" ]]; then
+            echo "Waiting for iot-simulator..."
+            sudo kubectl rollout status deployment/iot-simulator \
+              -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+          fi
+
+      - name: Health check
+        run: |
+          echo "Checking device-manager health..."
+          sleep 10
+          for i in {1..5}; do
+            if curl -sf http://localhost:30080/healthz; then
+              echo ""
+              echo "✅ device-manager is healthy"
+              exit 0
+            fi
+            echo "Attempt $i/5 failed, retrying in 5s..."
+            sleep 5
+          done
+          echo "❌ Health check failed"
+          exit 1
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "=== Pod Status ==="
+          sudo kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o wide
+          echo ""
+          echo "=== Services ==="
+          sudo kubectl get svc -n ${{ env.K8S_NAMESPACE }}
+          echo ""
+          echo "=== PV/PVC ==="
+          sudo kubectl get pv,pvc -n ${{ env.K8S_NAMESPACE }}

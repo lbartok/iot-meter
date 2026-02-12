@@ -7,8 +7,8 @@ resources:
   - ../../base
   - persistent-volumes.yaml
 
-patchesStrategicMerge:
-  - patches/mosquitto-exposure.yaml
-  - patches/device-manager-nodeport.yaml
-  - patches/simulator-replicas.yaml
-  - patches/pvc-storage-class.yaml
+patches:
+  - path: patches/mosquitto-exposure.yaml
+  - path: patches/device-manager-nodeport.yaml
+  - path: patches/simulator-replicas.yaml
+  - path: patches/pvc-storage-class.yaml

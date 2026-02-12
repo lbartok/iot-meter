@@ -481,21 +481,29 @@ iot-meter/
 │       ├── requirements.txt
 │       └── Dockerfile
 ├── k8s/                        # Kubernetes manifests (Kustomize)
-│   ├── kustomization.yaml
-│   ├── namespace.yaml
-│   ├── configmap.yaml
-│   ├── secrets.yaml
-│   └── *.yaml                  # Per-service deployments & services
+│   ├── base/                   # Base manifests (local development)
+│   │   ├── kustomization.yaml
+│   │   ├── namespace.yaml
+│   │   ├── configmap.yaml
+│   │   ├── secrets.yaml
+│   │   └── *.yaml              # Per-service deployments & services
+│   └── overlays/
+│       └── production/         # Production overlay (k3s)
+│           ├── kustomization.yaml
+│           ├── persistent-volumes.yaml
+│           └── patches/        # Production-specific patches
 ├── tests/                      # Automated test suite
 │   ├── conftest.py             # Shared fixtures
 │   ├── unit/                   # Unit tests
 │   ├── integration/            # Integration tests
 │   └── e2e/                    # End-to-end tests
 ├── docker-compose.yml          # Local development orchestration
+├── .github/workflows/deploy.yml # CI/CD pipeline (GitHub Actions)
 ├── start.sh                    # K8s bootstrap & test runner
 ├── IoT.md                      # IoT payload specification
 ├── assessment.md               # Improvement assessment
 ├── Makefile                    # Build / deploy / test targets
+├── PRODUCTION.md               # Production deployment runbook
 └── README.md                   # This file
 ```
 
@@ -523,6 +531,50 @@ Edit `services/mqtt-collector/collector.py` to:
 4. Implement API authentication and authorization
 5. Use environment variables or secrets management for credentials
 6. Enable network encryption between services
+
+## Production Deployment
+
+The platform can be deployed to a production server using **k3s** (lightweight Kubernetes)
+with CI/CD via **GitHub Actions**.
+
+### Architecture
+
+- **k3s** single-node cluster (expandable to multi-node)
+- **GitHub Actions** self-hosted runner for CI/CD
+- **NPM** (Nginx Proxy Manager) for HTTPS / Let's Encrypt
+- **ZFS** for persistent data storage with snapshots
+
+### CI/CD Pipeline
+
+The pipeline runs on every push to `main` with three stages:
+
+1. **Build** — Build Docker images for all services
+2. **Test** — Run unit & integration tests (deployment blocked if tests fail)
+3. **Deploy** — Apply K8s production overlay, inject secrets, verify health
+
+The IoT device simulator can be toggled on/off via the `DEPLOY_SIMULATOR` GitHub
+Actions variable, or through the manual workflow dispatch UI.
+
+### Quick Reference
+
+| Resource | URL / Port |
+|----------|------------|
+| REST API | `https://iot.bartok.sk` |
+| MQTT     | `iot.bartok.sk:1883` (plain TCP) |
+| Health   | `https://iot.bartok.sk/healthz` |
+
+### Getting Started
+
+See **[PRODUCTION.md](PRODUCTION.md)** for the complete server setup runbook covering:
+
+- Server preparation and user creation
+- Docker CE and k3s installation
+- ZFS data directory setup
+- GitHub Actions runner installation
+- Firewall, DNS, and NPM configuration
+- GitHub Secrets setup
+- Backup strategy and monitoring
+- Multi-node expansion path
 
 ## License
 
