@@ -171,6 +171,7 @@ spec:
       containers:
         - name: receiver
           image: iot-meter/alertmanager-github-receiver:latest
+          imagePullPolicy: Never
           env:
             - name: GITHUB_TOKEN
               valueFrom:

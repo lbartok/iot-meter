@@ -208,6 +208,20 @@ data:
               summary: 'Device Manager p95 latency above 2s'
               description: 'p95 request latency is {{ $value | humanizeDuration }}.'
 
+          - alert: InfluxDBQuerySlow
+            expr: >
+              rate(device_manager_influxdb_query_duration_seconds_sum[5m])
+              /
+              rate(device_manager_influxdb_query_duration_seconds_count[5m])
+              > 1
+            for: 5m
+            labels:
+              severity: warning
+              service: device-manager
+            annotations:
+              summary: 'InfluxDB queries averaging above 1s'
+              description: 'Average InfluxDB query time is {{ $value | humanizeDuration }}.'
+
       - name: mqtt_pipeline
         rules:
           - alert: HighSequenceGaps
@@ -301,6 +315,7 @@ spec:
             - '--storage.tsdb.path=/prometheus'
             - '--storage.tsdb.retention.time=90d'
             - '--web.enable-otlp-receiver'
+            - '--web.enable-lifecycle'
             - '--web.console.libraries=/etc/prometheus/console_libraries'
             - '--web.console.templates=/etc/prometheus/consoles'
           ports:

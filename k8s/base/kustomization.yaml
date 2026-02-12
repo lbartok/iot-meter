@@ -20,3 +20,14 @@ resources:
   - kube-state-metrics.yaml
   - grafana.yaml
   - alertmanager.yaml
+
+configMapGenerator:
+  - name: grafana-dashboards
+    namespace: iot-meter
+    files:
+      - iot-meter-overview.json
+    options:
+      labels:
+        app: grafana
+        app.kubernetes.io/part-of: iot-meter
+      disableNameSuffixHash: true

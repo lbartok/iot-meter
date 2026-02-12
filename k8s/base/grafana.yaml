@@ -50,23 +50,8 @@ data:
           foldersFromFilesStructure: false
 
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: grafana-dashboards
-  namespace: iot-meter
-  labels:
-    app: grafana
-    app.kubernetes.io/part-of: iot-meter
-data:
-  # Dashboard JSON is large — use a separate ConfigMap to avoid
-  # kustomize size issues. The JSON file is read from the local
-  # config directory during build; below is a minimal placeholder.
-  # In production, mount the actual dashboard JSON via a volume or
-  # inject it with kustomize configMapGenerator.
-  iot-meter-overview.json: |
-    {}
-
+# Dashboard JSON is managed by kustomize configMapGenerator
+# (see kustomization.yaml → configMapGenerator → grafana-dashboards)
 ---
 apiVersion: apps/v1
 kind: Deployment
