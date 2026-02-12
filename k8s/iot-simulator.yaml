@@ -1,0 +1,73 @@
+---
+# IoT Device Simulator
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iot-simulator
+  namespace: iot-meter
+  labels:
+    app: iot-simulator
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iot-simulator
+  template:
+    metadata:
+      labels:
+        app: iot-simulator
+    spec:
+      containers:
+        - name: iot-simulator
+          image: iot-meter/iot-device-simulator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+              name: health
+          env:
+            - name: HEALTH_PORT
+              value: "8082"
+          envFrom:
+            - configMapRef:
+                name: iot-meter-config
+            - secretRef:
+                name: iot-meter-secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iot-simulator
+  namespace: iot-meter
+  labels:
+    app: iot-simulator
+spec:
+  selector:
+    app: iot-simulator
+  ports:
+    - name: health
+      port: 8082
+      targetPort: 8082

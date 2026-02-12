@@ -2,8 +2,10 @@ import os
 import json
 import time
 import random
+import threading
 from datetime import datetime
 import paho.mqtt.client as mqtt
+from flask import Flask, jsonify
 import logging
 
 # Configure logging
@@ -13,6 +15,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Health check Flask app
+health_app = Flask(__name__)
+simulator_ready = False
+
+
+@health_app.route('/healthz', methods=['GET'])
+def liveness():
+    """Liveness probe - is the process alive?"""
+    return jsonify({'status': 'alive', 'service': 'iot-device-simulator'}), 200
+
+
+@health_app.route('/readyz', methods=['GET'])
+def readiness():
+    """Readiness probe - are the simulators connected?"""
+    if simulator_ready:
+        return jsonify({'status': 'ready', 'service': 'iot-device-simulator'}), 200
+    return jsonify({'status': 'not ready', 'service': 'iot-device-simulator'}), 503
+
 class IoTDeviceSimulator:
     def __init__(self, device_id, device_type):
         self.device_id = device_id
@@ -21,22 +41,22 @@ class IoTDeviceSimulator:
         self.mqtt_port = int(os.getenv('MQTT_PORT', 1883))
         self.mqtt_topic = f"iot/{device_id}/telemetry"
         
-        self.mqtt_client = mqtt.Client(client_id=device_id)
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=device_id)
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_disconnect = self.on_disconnect
         
         self.connected = False
         
-    def on_connect(self, client, userdata, flags, rc):
-        """Callback when connected to MQTT broker"""
-        if rc == 0:
+    def on_connect(self, client, userdata, flags, reason_code, properties):
+        """Callback when connected to MQTT broker (paho-mqtt v2 API)"""
+        if reason_code == 0:
             self.connected = True
             logger.info(f"Device {self.device_id} connected to MQTT broker")
         else:
-            logger.error(f"Device {self.device_id} failed to connect, return code: {rc}")
+            logger.error(f"Device {self.device_id} failed to connect, reason code: {reason_code}")
             
-    def on_disconnect(self, client, userdata, rc):
-        """Callback when disconnected from MQTT broker"""
+    def on_disconnect(self, client, userdata, flags, reason_code, properties):
+        """Callback when disconnected from MQTT broker (paho-mqtt v2 API)"""
         self.connected = False
         logger.warning(f"Device {self.device_id} disconnected from MQTT broker")
         
@@ -139,10 +159,23 @@ class IoTDeviceSimulator:
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
 
+def start_health_server():
+    """Start the health check HTTP server in a background thread"""
+    health_port = int(os.getenv('HEALTH_PORT', 8082))
+    health_app.run(host='0.0.0.0', port=health_port, threaded=True)
+
+
 def main():
     """Main function to run multiple device simulators"""
+    global simulator_ready
+
     device_count = int(os.getenv('DEVICE_COUNT', 3))
     publish_interval = int(os.getenv('PUBLISH_INTERVAL', 5))
+    
+    # Start health check server in background thread
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+    logger.info("Health check server started")
     
     # Define device configurations
     devices = []
@@ -158,10 +191,6 @@ def main():
     if devices:
         logger.info(f"Starting {device_count} device simulators with {publish_interval}s interval")
         
-        # For simplicity, we'll run devices sequentially with staggered starts
-        # In production, you'd use threading or multiprocessing
-        import threading
-        
         threads = []
         for device in devices:
             thread = threading.Thread(target=device.run, args=(publish_interval,))
@@ -169,6 +198,10 @@ def main():
             thread.start()
             threads.append(thread)
             time.sleep(1)  # Stagger the starts
+        
+        # Mark as ready once all device threads are started
+        simulator_ready = True
+        logger.info("All simulators started, service is ready")
         
         # Keep main thread alive
         try:

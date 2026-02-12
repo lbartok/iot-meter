@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-db
+  namespace: iot-meter
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: iot-meter
+data:
+  init-db.sql: |
+    -- Device metadata table
+    CREATE TABLE IF NOT EXISTS devices (
+        id SERIAL PRIMARY KEY,
+        device_id VARCHAR(255) UNIQUE NOT NULL,
+        device_name VARCHAR(255) NOT NULL,
+        device_type VARCHAR(100),
+        location VARCHAR(255),
+        status VARCHAR(50) DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_seen TIMESTAMP,
+        metadata JSONB
+    );
+
+    -- Index for faster lookups
+    CREATE INDEX IF NOT EXISTS idx_device_id ON devices(device_id);
+    CREATE INDEX IF NOT EXISTS idx_status ON devices(status);
+    CREATE INDEX IF NOT EXISTS idx_last_seen ON devices(last_seen);
+
+    -- Device configuration table
+    CREATE TABLE IF NOT EXISTS device_configs (
+        id SERIAL PRIMARY KEY,
+        device_id VARCHAR(255) NOT NULL,
+        config_key VARCHAR(255) NOT NULL,
+        config_value TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE,
+        UNIQUE(device_id, config_key)
+    );
+
+    -- Device alerts table
+    CREATE TABLE IF NOT EXISTS device_alerts (
+        id SERIAL PRIMARY KEY,
+        device_id VARCHAR(255) NOT NULL,
+        alert_type VARCHAR(100) NOT NULL,
+        severity VARCHAR(50),
+        message TEXT,
+        acknowledged BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_device_alerts_device ON device_alerts(device_id);
+    CREATE INDEX IF NOT EXISTS idx_device_alerts_acknowledged ON device_alerts(acknowledged);
+
+    -- Insert some sample devices
+    INSERT INTO devices (device_id, device_name, device_type, location, metadata)
+    VALUES
+        ('device-001', 'Temperature Sensor 1', 'temperature', 'Building A - Room 101', '{"sampling_rate": "5s", "unit": "celsius"}'),
+        ('device-002', 'Temperature Sensor 2', 'temperature', 'Building A - Room 102', '{"sampling_rate": "5s", "unit": "celsius"}'),
+        ('device-003', 'Humidity Sensor 1', 'humidity', 'Building B - Room 201', '{"sampling_rate": "10s", "unit": "percentage"}')
+    ON CONFLICT (device_id) DO NOTHING;

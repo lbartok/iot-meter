@@ -1,12 +1,14 @@
 import os
 import json
 import time
+import threading
 from datetime import datetime
 from io import BytesIO
 import paho.mqtt.client as mqtt
 from minio import Minio
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+from flask import Flask, jsonify
 import logging
 
 # Configure logging
@@ -15,6 +17,25 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Health check Flask app
+health_app = Flask(__name__)
+collector_instance = None
+
+
+@health_app.route('/healthz', methods=['GET'])
+def liveness():
+    """Liveness probe - is the process alive?"""
+    return jsonify({'status': 'alive', 'service': 'mqtt-collector'}), 200
+
+
+@health_app.route('/readyz', methods=['GET'])
+def readiness():
+    """Readiness probe - is the service ready to process messages?"""
+    if collector_instance and collector_instance.is_ready():
+        return jsonify({'status': 'ready', 'service': 'mqtt-collector'}), 200
+    return jsonify({'status': 'not ready', 'service': 'mqtt-collector'}), 503
+
 
 class MQTTCollector:
     def __init__(self):
@@ -35,6 +56,11 @@ class MQTTCollector:
         self.influxdb_org = os.getenv('INFLUXDB_ORG', 'iot-org')
         self.influxdb_bucket = os.getenv('INFLUXDB_BUCKET', 'iot-metrics')
         
+        # Connection state tracking
+        self.mqtt_connected = False
+        self.minio_ready = False
+        self.influxdb_ready = False
+        
         # Initialize MinIO client
         self.minio_client = None
         self.init_minio()
@@ -44,12 +70,16 @@ class MQTTCollector:
         self.write_api = None
         self.init_influxdb()
         
-        # Initialize MQTT client
-        self.mqtt_client = mqtt.Client()
+        # Initialize MQTT client (paho-mqtt v2 API)
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
         self.mqtt_client.on_disconnect = self.on_disconnect
         
+    def is_ready(self):
+        """Check if the collector is ready to process messages"""
+        return self.mqtt_connected and self.minio_ready and self.influxdb_ready
+
     def init_minio(self):
         """Initialize MinIO client"""
         try:
@@ -62,8 +92,10 @@ class MQTTCollector:
             # Check if bucket exists
             if not self.minio_client.bucket_exists(self.minio_bucket):
                 logger.warning(f"Bucket {self.minio_bucket} does not exist, waiting for creation...")
+            self.minio_ready = True
             logger.info("MinIO client initialized successfully")
         except Exception as e:
+            self.minio_ready = False
             logger.error(f"Failed to initialize MinIO client: {e}")
             
     def init_influxdb(self):
@@ -75,22 +107,27 @@ class MQTTCollector:
                 org=self.influxdb_org
             )
             self.write_api = self.influx_client.write_api(write_options=SYNCHRONOUS)
+            self.influxdb_ready = True
             logger.info("InfluxDB client initialized successfully")
         except Exception as e:
+            self.influxdb_ready = False
             logger.error(f"Failed to initialize InfluxDB client: {e}")
             
-    def on_connect(self, client, userdata, flags, rc):
-        """Callback when connected to MQTT broker"""
-        if rc == 0:
+    def on_connect(self, client, userdata, flags, reason_code, properties):
+        """Callback when connected to MQTT broker (paho-mqtt v2 API)"""
+        if reason_code == 0:
+            self.mqtt_connected = True
             logger.info(f"Connected to MQTT broker at {self.mqtt_broker}:{self.mqtt_port}")
             client.subscribe(self.mqtt_topic)
             logger.info(f"Subscribed to topic: {self.mqtt_topic}")
         else:
-            logger.error(f"Failed to connect to MQTT broker, return code: {rc}")
+            self.mqtt_connected = False
+            logger.error(f"Failed to connect to MQTT broker, reason code: {reason_code}")
             
-    def on_disconnect(self, client, userdata, rc):
-        """Callback when disconnected from MQTT broker"""
-        logger.warning(f"Disconnected from MQTT broker, return code: {rc}")
+    def on_disconnect(self, client, userdata, flags, reason_code, properties):
+        """Callback when disconnected from MQTT broker (paho-mqtt v2 API)"""
+        self.mqtt_connected = False
+        logger.warning(f"Disconnected from MQTT broker, reason code: {reason_code}")
         
     def on_message(self, client, userdata, msg):
         """Callback when message received from MQTT"""
@@ -191,6 +228,19 @@ class MQTTCollector:
         # Start the MQTT loop
         self.mqtt_client.loop_forever()
 
+
+def start_health_server():
+    """Start the health check HTTP server in a background thread"""
+    health_port = int(os.getenv('HEALTH_PORT', 8081))
+    health_app.run(host='0.0.0.0', port=health_port, threaded=True)
+
+
 if __name__ == "__main__":
-    collector = MQTTCollector()
-    collector.run()
+    collector_instance = MQTTCollector()
+
+    # Start health check server in background thread
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+    logger.info("Health check server started")
+
+    collector_instance.run()

@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean restart status test
+.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -98,3 +98,36 @@ dev: ## Start in development mode with logs
 	docker-compose up
 
 rebuild: down build up ## Rebuild and restart all services
+
+# ==================== Kubernetes Targets ====================
+
+REGISTRY ?= iot-meter
+K8S_NAMESPACE ?= iot-meter
+
+k8s-build: ## Build Docker images for Kubernetes
+	docker build -t $(REGISTRY)/device-manager:latest ./services/device-manager
+	docker build -t $(REGISTRY)/mqtt-collector:latest ./services/mqtt-collector
+	docker build -t $(REGISTRY)/iot-device-simulator:latest ./services/iot-device-simulator
+
+k8s-deploy: ## Deploy all services to Kubernetes
+	kubectl apply -k k8s/
+
+k8s-delete: ## Delete all Kubernetes resources
+	kubectl delete -k k8s/
+
+k8s-status: ## Show status of Kubernetes pods
+	kubectl get pods -n $(K8S_NAMESPACE)
+	@echo ""
+	kubectl get svc -n $(K8S_NAMESPACE)
+
+k8s-logs-collector: ## Show logs from MQTT collector pod
+	kubectl logs -f -l app=mqtt-collector -n $(K8S_NAMESPACE)
+
+k8s-logs-manager: ## Show logs from Device Manager pod
+	kubectl logs -f -l app=device-manager -n $(K8S_NAMESPACE)
+
+k8s-logs-simulator: ## Show logs from IoT simulator pod
+	kubectl logs -f -l app=iot-simulator -n $(K8S_NAMESPACE)
+
+k8s-port-forward: ## Port-forward Device Manager API to localhost:8080
+	kubectl port-forward svc/device-manager 8080:8080 -n $(K8S_NAMESPACE)

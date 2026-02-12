@@ -1,0 +1,73 @@
+---
+# MQTT Collector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mqtt-collector
+  namespace: iot-meter
+  labels:
+    app: mqtt-collector
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mqtt-collector
+  template:
+    metadata:
+      labels:
+        app: mqtt-collector
+    spec:
+      containers:
+        - name: mqtt-collector
+          image: iot-meter/mqtt-collector:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+              name: health
+          env:
+            - name: HEALTH_PORT
+              value: "8081"
+          envFrom:
+            - configMapRef:
+                name: iot-meter-config
+            - secretRef:
+                name: iot-meter-secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mqtt-collector
+  namespace: iot-meter
+  labels:
+    app: mqtt-collector
+spec:
+  selector:
+    app: mqtt-collector
+  ports:
+    - name: health
+      port: 8081
+      targetPort: 8081

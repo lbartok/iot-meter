@@ -58,6 +58,27 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'service': 'device-manager'}), 200
 
+
+@app.route('/healthz', methods=['GET'])
+def liveness():
+    """Liveness probe - is the process alive?"""
+    return jsonify({'status': 'alive', 'service': 'device-manager'}), 200
+
+
+@app.route('/readyz', methods=['GET'])
+def readiness():
+    """Readiness probe - can the service handle requests?"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.close()
+        conn.close()
+        return jsonify({'status': 'ready', 'service': 'device-manager'}), 200
+    except Exception as e:
+        logger.error(f"Readiness check failed: {e}")
+        return jsonify({'status': 'not ready', 'service': 'device-manager', 'error': str(e)}), 503
+
 @app.route('/api/devices', methods=['GET'])
 def get_devices():
     """Get all devices"""

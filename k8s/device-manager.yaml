@@ -1,0 +1,70 @@
+---
+# Device Manager REST API
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: device-manager
+  namespace: iot-meter
+  labels:
+    app: device-manager
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: device-manager
+  template:
+    metadata:
+      labels:
+        app: device-manager
+    spec:
+      containers:
+        - name: device-manager
+          image: iot-meter/device-manager:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: iot-meter-config
+            - secretRef:
+                name: iot-meter-secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: device-manager
+  namespace: iot-meter
+  labels:
+    app: device-manager
+spec:
+  selector:
+    app: device-manager
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

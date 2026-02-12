@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
@@ -12,5 +12,5 @@ COPY app.py .
 # Expose port
 EXPOSE 8080
 
-# Run the application
-CMD ["python", "-u", "app.py"]
+# Run with gunicorn for production
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "--timeout", "120", "app:app"]
