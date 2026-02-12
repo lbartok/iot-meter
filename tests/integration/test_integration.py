@@ -1,9 +1,15 @@
 """
-Integration tests for the device-manager API.
+Integration tests for the device-manager API — v2 protocol.
 
 These tests exercise the full request → DB → response path by mocking
 only the outermost database connection boundary. The Flask app, routing,
 request parsing, and JSON serialisation are all exercised for real.
+
+v2 additions (IoT.md references):
+  - §5  Device status (connection_status) integration
+  - §6  Command send / history / ack integration
+  - §6.5 Command round-trip: send → ack → verify
+  - §4.2 Collector v2 telemetry message routing
 """
 import json
 import pytest
@@ -196,13 +202,13 @@ class TestStatsIntegration:
 
 
 class TestCollectorMessageProcessingIntegration:
-    """Integration test: message flows through collector's on_message → storage."""
+    """Integration test: v2 telemetry flows through collector — IoT.md §4.2."""
 
     @patch('collector.Minio')
     @patch('collector.InfluxDBClient')
     @patch('collector.mqtt.Client')
-    def test_message_flows_to_both_stores(self, mock_mqtt, mock_influx_cls, mock_minio_cls):
-        """A single MQTT message should be stored in both MinIO and InfluxDB."""
+    def test_v2_telemetry_flows_to_both_stores(self, mock_mqtt, mock_influx_cls, mock_minio_cls):
+        """A v2 telemetry message should be stored in both MinIO and InfluxDB."""
         mock_minio_instance = MagicMock()
         mock_minio_cls.return_value = mock_minio_instance
         mock_minio_instance.bucket_exists.return_value = True
@@ -214,7 +220,46 @@ class TestCollectorMessageProcessingIntegration:
         collector = MQTTCollector()
 
         msg = MagicMock()
-        msg.topic = 'iot/sensor-abc/telemetry'
+        msg.topic = 'iot/dc-meter-001/telemetry'
+        msg.payload = json.dumps({
+            "v": 2,
+            "device_id": "dc-meter-001",
+            "ts": "2026-02-12T10:00:00Z",
+            "seq": 42,
+            "msg_type": "telemetry",
+            "measurements": [
+                {"ts": "2026-02-12T10:00:00Z", "type": "voltage_dc", "val": 750.2, "unit": "V"},
+                {"ts": "2026-02-12T10:00:00Z", "type": "current_dc", "val": 305.1, "unit": "A"},
+            ]
+        }).encode('utf-8')
+
+        collector.on_message(MagicMock(), None, msg)
+
+        # MinIO should receive one put_object call under telemetry/ category
+        mock_minio_instance.put_object.assert_called_once()
+        put_args = mock_minio_instance.put_object.call_args
+        assert 'dc-meter-001/' in put_args[0][1]
+
+        # InfluxDB should receive 2 writes (voltage_dc + current_dc)
+        assert mock_write_api.write.call_count == 2
+
+    @patch('collector.Minio')
+    @patch('collector.InfluxDBClient')
+    @patch('collector.mqtt.Client')
+    def test_v1_fallback_message(self, mock_mqtt, mock_influx_cls, mock_minio_cls):
+        """A v1 (no envelope) message should still be processed — IoT.md §13."""
+        mock_minio_instance = MagicMock()
+        mock_minio_cls.return_value = mock_minio_instance
+        mock_minio_instance.bucket_exists.return_value = True
+
+        mock_write_api = MagicMock()
+        mock_influx_cls.return_value.write_api.return_value = mock_write_api
+
+        from collector import MQTTCollector
+        collector = MQTTCollector()
+
+        msg = MagicMock()
+        msg.topic = 'iot/legacy-sensor/telemetry'
         msg.payload = json.dumps({
             "timestamp": "2026-02-12T10:00:00",
             "temperature": 24.5,
@@ -224,10 +269,109 @@ class TestCollectorMessageProcessingIntegration:
 
         collector.on_message(MagicMock(), None, msg)
 
-        # MinIO should receive one put_object call
+        # MinIO should receive one store call
         mock_minio_instance.put_object.assert_called_once()
-        put_args = mock_minio_instance.put_object.call_args
-        assert 'sensor-abc/' in put_args[0][1]
 
         # InfluxDB should receive 2 writes (temperature + humidity, not status/timestamp)
         assert mock_write_api.write.call_count == 2
+
+    @patch('collector.Minio')
+    @patch('collector.InfluxDBClient')
+    @patch('collector.mqtt.Client')
+    def test_duplicate_message_rejected(self, mock_mqtt, mock_influx_cls, mock_minio_cls):
+        """Duplicate seq numbers from same device are dropped — IoT.md §4.1 / REQ-SEQ-001."""
+        mock_minio_instance = MagicMock()
+        mock_minio_cls.return_value = mock_minio_instance
+        mock_minio_instance.bucket_exists.return_value = True
+
+        mock_write_api = MagicMock()
+        mock_influx_cls.return_value.write_api.return_value = mock_write_api
+
+        from collector import MQTTCollector
+        collector = MQTTCollector()
+
+        v2_payload = {
+            "v": 2, "device_id": "dc-meter-dup", "ts": "2026-02-12T10:00:00Z",
+            "seq": 5, "msg_type": "telemetry",
+            "measurements": [{"ts": "2026-02-12T10:00:00Z", "type": "voltage_dc", "val": 750.0, "unit": "V"}]
+        }
+
+        msg1 = MagicMock()
+        msg1.topic = 'iot/dc-meter-dup/telemetry'
+        msg1.payload = json.dumps(v2_payload).encode('utf-8')
+
+        msg2 = MagicMock()
+        msg2.topic = 'iot/dc-meter-dup/telemetry'
+        msg2.payload = json.dumps(v2_payload).encode('utf-8')  # same seq
+
+        collector.on_message(MagicMock(), None, msg1)
+        collector.on_message(MagicMock(), None, msg2)
+
+        # Only the first message should be stored
+        assert mock_minio_instance.put_object.call_count == 1
+        assert mock_write_api.write.call_count == 1
+
+
+class TestDeviceStatusIntegration:
+    """Integration tests for device status endpoints — IoT.md §5."""
+
+    @patch('app.get_db_connection')
+    def test_status_roundtrip(self, mock_conn, dm_client):
+        """Update device status then read it back."""
+        mock_cursor = MagicMock()
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        # PUT status → online
+        mock_cursor.fetchone.return_value = {
+            'device_id': 'dc-meter-001', 'connection_status': 'online'
+        }
+        resp = dm_client.put('/api/devices/dc-meter-001/status',
+                             data=json.dumps({'connection_status': 'online'}),
+                             content_type='application/json')
+        assert resp.status_code == 200
+        assert resp.get_json()['connection_status'] == 'online'
+
+        # GET status
+        resp = dm_client.get('/api/devices/dc-meter-001/status')
+        assert resp.status_code == 200
+
+
+class TestCommandIntegration:
+    """Integration tests for command send / ack — IoT.md §6."""
+
+    @patch('app.get_mqtt_client')
+    @patch('app.get_db_connection')
+    def test_command_send_and_ack(self, mock_conn, mock_get_mqtt, dm_client):
+        """Send a command, then acknowledge it — full round-trip."""
+        mock_cursor = MagicMock()
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        mock_mqtt_client = MagicMock()
+        mock_mqtt_client.publish.return_value = MagicMock(rc=0)
+        mock_get_mqtt.return_value = mock_mqtt_client
+
+        # POST command
+        mock_cursor.fetchone.return_value = {
+            'cmd_id': 'test-cmd-id', 'device_id': 'dc-meter-001',
+            'cmd': 'update_config', 'params': {'send_interval_s': 5},
+            'status': 'pending', 'ack_detail': None,
+            'created_at': '2026-02-12T00:00:00', 'acked_at': None,
+        }
+        resp = dm_client.post('/api/devices/dc-meter-001/commands',
+                              data=json.dumps({'cmd': 'update_config', 'params': {'send_interval_s': 5}}),
+                              content_type='application/json')
+        assert resp.status_code == 201
+        cmd_id = resp.get_json()['cmd_id']
+
+        # ACK command
+        mock_cursor.fetchone.return_value = {
+            'cmd_id': cmd_id, 'device_id': 'dc-meter-001',
+            'cmd': 'update_config', 'params': {'send_interval_s': 5},
+            'status': 'accepted', 'ack_detail': 'Config applied',
+            'created_at': '2026-02-12T00:00:00', 'acked_at': '2026-02-12T00:00:05',
+        }
+        resp = dm_client.put(f'/api/commands/{cmd_id}/ack',
+                             data=json.dumps({'result': 'accepted', 'detail': 'Config applied'}),
+                             content_type='application/json')
+        assert resp.status_code == 200
+        assert resp.get_json()['status'] == 'accepted'

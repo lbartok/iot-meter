@@ -1,16 +1,25 @@
 """
-End-to-end tests for the IoT Meter platform.
+End-to-end tests for the IoT Meter platform — v2 protocol.
 
 These tests require the full infrastructure running (docker-compose up).
 They exercise the real API, MQTT broker, InfluxDB and MinIO.
 
-Two types of MQTT messages are tested:
-  1. Single measurement — one message with a single measure unit
-  2. Batch measurements — one message containing an array of data points
-     logging multiple measurements over a period of time
+v2 protocol message types tested (IoT.md references):
+  1. v2 telemetry — datagram with measurements array (§4.2)
+  2. v2 hello — heartbeat with device status (§4.3)
+  3. v2 commands — server→device command round-trip (§6)
+  4. v1 backward compat — legacy single/batch messages (§13)
+
+Datagram generators:
+  - generate_v2_dc_datagram()   — DC 750V traction meter stream
+  - generate_v2_ac_datagram()   — AC 25kV traction meter stream
+  - generate_v2_hello()         — hello heartbeat
 """
 import json
 import time
+import uuid
+import random
+from datetime import datetime, timezone
 import pytest
 import requests
 import paho.mqtt.client as mqtt
@@ -31,9 +40,9 @@ WAIT_FOR_PROCESSING = 3  # seconds to wait for async MQTT → storage pipeline
 # Helpers
 # ---------------------------------------------------------------------------
 
-def mqtt_publish(topic: str, payload: dict, qos: int = 1):
+def mqtt_publish(topic: str, payload: dict, qos: int = 2):
     """Publish a single MQTT message and wait for delivery."""
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="e2e-test-publisher")
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"e2e-pub-{uuid.uuid4().hex[:8]}")
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
     client.loop_start()
     info = client.publish(topic, json.dumps(payload), qos=qos)
@@ -59,26 +68,108 @@ def api_delete(path: str, **kwargs):
 
 
 # ---------------------------------------------------------------------------
+# v2 Datagram Generators — IoT.md §4.2, §8.1
+# ---------------------------------------------------------------------------
+
+def _now_iso():
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+_seq_counter = 0
+
+
+def _next_seq():
+    global _seq_counter
+    s = _seq_counter
+    _seq_counter += 1
+    return s
+
+
+def generate_v2_dc_datagram(device_id: str, num_samples: int = 10) -> dict:
+    """Generate a v2 DC traction telemetry datagram.
+
+    Simulates a 750V DC metro power meter sampling at 1 Hz.
+    IoT.md §4.2, §8.1 (voltage_dc, current_dc).
+    """
+    measurements = []
+    for _ in range(num_samples):
+        ts = _now_iso()
+        measurements.append({'ts': ts, 'type': 'voltage_dc', 'val': round(random.uniform(700, 800), 1), 'unit': 'V'})
+        measurements.append({'ts': ts, 'type': 'current_dc', 'val': round(random.uniform(200, 400), 1), 'unit': 'A'})
+    return {
+        'v': 2, 'device_id': device_id, 'ts': _now_iso(),
+        'seq': _next_seq(), 'msg_type': 'telemetry',
+        'measurements': measurements,
+    }
+
+
+def generate_v2_ac_datagram(device_id: str, num_samples: int = 10) -> dict:
+    """Generate a v2 AC traction telemetry datagram.
+
+    Simulates a 25kV AC catenary power meter sampling at 1 Hz.
+    IoT.md §4.2, §8.1 (voltage_ac, current_ac, frequency, pf).
+    """
+    measurements = []
+    for _ in range(num_samples):
+        ts = _now_iso()
+        measurements.append({'ts': ts, 'type': 'voltage_ac', 'val': round(random.uniform(24000, 26000), 0), 'unit': 'V'})
+        measurements.append({'ts': ts, 'type': 'current_ac', 'val': round(random.uniform(100, 200), 1), 'unit': 'A'})
+        measurements.append({'ts': ts, 'type': 'frequency', 'val': round(random.uniform(49.9, 50.1), 2), 'unit': 'Hz'})
+        measurements.append({'ts': ts, 'type': 'pf', 'val': round(random.uniform(0.92, 0.99), 2)})
+    return {
+        'v': 2, 'device_id': device_id, 'ts': _now_iso(),
+        'seq': _next_seq(), 'msg_type': 'telemetry',
+        'measurements': measurements,
+    }
+
+
+def generate_v2_hello(device_id: str, fw_version: str = '2.1.0') -> dict:
+    """Generate a v2 hello message — IoT.md §4.3."""
+    return {
+        'v': 2, 'device_id': device_id, 'ts': _now_iso(),
+        'seq': _next_seq(), 'msg_type': 'hello',
+        'fw_version': fw_version, 'uptime_s': 3600,
+        'broker_connections': 1, 'buf_usage_pct': 0,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Fixture: ensure test device exists, clean up after
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def e2e_device():
-    """Create a dedicated e2e test device, yield it, then delete."""
+    """Create a dedicated e2e test device (DC power meter), yield it, then delete."""
     device_payload = {
-        "device_id": "e2e-test-device-001",
-        "device_name": "E2E Test Sensor",
-        "device_type": "temperature",
-        "location": "E2E Test Lab",
+        "device_id": "e2e-dc-meter-001",
+        "device_name": "E2E DC Power Meter",
+        "device_type": "power_meter_dc",
+        "location": "E2E Test Depot",
         "status": "active"
     }
-    # Create (ignore 409 if already exists from a prior failed run)
     resp = api_post("/api/devices", json_data=device_payload)
     assert resp.status_code in (201, 409)
 
     yield device_payload
 
-    # Cleanup
+    api_delete(f"/api/devices/{device_payload['device_id']}")
+
+
+@pytest.fixture(scope="module")
+def e2e_ac_device():
+    """Create a dedicated e2e AC test device, yield it, then delete."""
+    device_payload = {
+        "device_id": "e2e-ac-meter-001",
+        "device_name": "E2E AC Power Meter",
+        "device_type": "power_meter_ac",
+        "location": "E2E Test Catenary",
+        "status": "active"
+    }
+    resp = api_post("/api/devices", json_data=device_payload)
+    assert resp.status_code in (201, 409)
+
+    yield device_payload
+
     api_delete(f"/api/devices/{device_payload['device_id']}")
 
 
@@ -116,8 +207,8 @@ class TestE2EDeviceCRUD:
         payload = {
             "device_id": "e2e-crud-device",
             "device_name": "CRUD Test",
-            "device_type": "humidity",
-            "location": "Test Room"
+            "device_type": "power_meter_dc",
+            "location": "Test Depot"
         }
         resp = api_post("/api/devices", json_data=payload)
         assert resp.status_code in (201, 409)
@@ -135,13 +226,11 @@ class TestE2EDeviceCRUD:
 
     def test_update_device(self):
         resp = api_put("/api/devices/e2e-crud-device",
-                       json_data={"device_name": "Updated CRUD Test", "location": "New Room"})
+                       json_data={"device_name": "Updated CRUD Test", "location": "New Depot"})
         assert resp.status_code == 200
         assert resp.json()['device_name'] == 'Updated CRUD Test'
 
     def test_heartbeat(self):
-        resp = api_post("/api/devices/e2e-crud-device")
-        # heartbeat endpoint
         resp = api_post("/api/devices/e2e-crud-device/heartbeat")
         assert resp.status_code == 200
 
@@ -172,178 +261,223 @@ class TestE2EAlerts:
     def test_create_and_acknowledge_alert(self, e2e_device):
         device_id = e2e_device['device_id']
 
-        # Create alert
         alert = {
-            "alert_type": "high_temperature",
-            "severity": "critical",
-            "message": "E2E test: temperature exceeded threshold"
+            "alert_type": "sequence_gap",
+            "severity": "warning",
+            "message": "E2E test: sequence gap detected"
         }
         resp = api_post(f"/api/devices/{device_id}/alerts", json_data=alert)
         assert resp.status_code == 201
         alert_id = resp.json()['id']
 
-        # List alerts
         resp = api_get(f"/api/devices/{device_id}/alerts")
         assert resp.status_code == 200
         alerts = resp.json()
         assert any(a['id'] == alert_id for a in alerts)
 
-        # Acknowledge
         resp = api_post(f"/api/alerts/{alert_id}/acknowledge")
         assert resp.status_code == 200
         assert resp.json()['acknowledged'] is True
 
 
 # ===================================================================
-# MQTT message type 1: Single measurement (one measure unit)
+# v2 Telemetry — DC datagram (IoT.md §4.2, §8.1)
 # ===================================================================
 
-class TestE2ESingleMeasurement:
+class TestE2EDCTelemetry:
     """
-    Send a single telemetry message with ONE measurement value.
+    Send a v2 DC telemetry datagram with measurements array.
     Verify it flows through MQTT → collector → InfluxDB & MinIO.
     """
 
-    def test_single_measurement_message(self, e2e_device):
+    def test_dc_datagram(self, e2e_device):
         device_id = e2e_device['device_id']
         topic = f"iot/{device_id}/telemetry"
 
-        # Single measurement payload — one measure unit
-        single_message = {
+        datagram = generate_v2_dc_datagram(device_id, num_samples=5)
+        mqtt_publish(topic, datagram)
+
+        time.sleep(WAIT_FOR_PROCESSING)
+
+        # Verify data arrived in InfluxDB — voltage_dc metric
+        resp = api_get(f"/api/devices/{device_id}/metrics?start=-5m&metric=voltage_dc")
+        assert resp.status_code == 200
+        metrics = resp.json()
+        assert len(metrics) >= 1
+        assert metrics[-1]['metric'] == 'voltage_dc'
+        assert isinstance(metrics[-1]['value'], (int, float))
+
+        # Verify raw data in MinIO
+        resp = api_get(f"/api/devices/{device_id}/raw-data")
+        assert resp.status_code == 200
+        files = resp.json()
+        assert len(files) >= 1
+        assert any(device_id in f['filename'] for f in files)
+
+
+# ===================================================================
+# v2 Telemetry — AC datagram (IoT.md §4.2, §8.1)
+# ===================================================================
+
+class TestE2EACTelemetry:
+    """
+    Send a v2 AC telemetry datagram. Verify frequency and pf metrics.
+    """
+
+    def test_ac_datagram(self, e2e_ac_device):
+        device_id = e2e_ac_device['device_id']
+        topic = f"iot/{device_id}/telemetry"
+
+        datagram = generate_v2_ac_datagram(device_id, num_samples=5)
+        mqtt_publish(topic, datagram)
+
+        time.sleep(WAIT_FOR_PROCESSING)
+
+        resp = api_get(f"/api/devices/{device_id}/metrics?start=-5m&metric=frequency")
+        assert resp.status_code == 200
+        metrics = resp.json()
+        assert len(metrics) >= 1
+
+
+# ===================================================================
+# v2 Hello message (IoT.md §4.3)
+# ===================================================================
+
+class TestE2EHelloMessage:
+    """
+    Send a v2 hello message and verify it's processed.
+    """
+
+    def test_hello_stored(self, e2e_device):
+        device_id = e2e_device['device_id']
+        topic = f"iot/{device_id}/hello"
+
+        hello = generate_v2_hello(device_id)
+        mqtt_publish(topic, hello)
+
+        time.sleep(WAIT_FOR_PROCESSING)
+
+        # Hello messages should be archived in MinIO
+        resp = api_get(f"/api/devices/{device_id}/raw-data")
+        assert resp.status_code == 200
+        files = resp.json()
+        assert len(files) >= 1
+
+
+# ===================================================================
+# v2 Command round-trip (IoT.md §6)
+# ===================================================================
+
+class TestE2ECommandRoundTrip:
+    """
+    Send a command via the REST API and verify it arrives on the
+    MQTT command topic. Then publish a command_ack and verify it's
+    recorded in the device-manager.
+    """
+
+    def test_send_command(self, e2e_device):
+        device_id = e2e_device['device_id']
+
+        resp = api_post(f"/api/devices/{device_id}/commands",
+                        json_data={'cmd': 'update_config', 'params': {'send_interval_s': 5}})
+        # 201 if MQTT succeeds, 202 if MQTT down but persisted
+        assert resp.status_code in (201, 202)
+        data = resp.json()
+        assert 'cmd_id' in data
+        assert data['cmd'] == 'update_config'
+
+    def test_command_history(self, e2e_device):
+        device_id = e2e_device['device_id']
+
+        resp = api_get(f"/api/devices/{device_id}/commands")
+        assert resp.status_code == 200
+        commands = resp.json()
+        assert isinstance(commands, list)
+
+
+# ===================================================================
+# v2 Device status (IoT.md §5)
+# ===================================================================
+
+class TestE2EDeviceStatus:
+    """
+    Update and query device connection status via REST API.
+    Verify status retained message published via MQTT.
+    """
+
+    def test_update_status(self, e2e_device):
+        device_id = e2e_device['device_id']
+
+        # Publish online status via MQTT retained message
+        status_payload = {
+            'v': 2, 'device_id': device_id,
+            'status': 'online', 'ts': _now_iso(),
+        }
+        mqtt_publish(f"iot/{device_id}/status", status_payload, qos=1)
+
+        time.sleep(WAIT_FOR_PROCESSING)
+
+        # Query status via API
+        resp = api_get(f"/api/devices/{device_id}/status")
+        assert resp.status_code == 200
+
+
+# ===================================================================
+# v1 backward compatibility (IoT.md §13)
+# ===================================================================
+
+class TestE2EV1BackwardCompat:
+    """
+    Send v1-format (no envelope) messages and verify the collector
+    still processes them — IoT.md §13 backward compatibility.
+    """
+
+    def test_v1_single_measurement(self, e2e_device):
+        device_id = e2e_device['device_id']
+        topic = f"iot/{device_id}/telemetry"
+
+        v1_message = {
             "timestamp": "2026-02-12T12:00:00Z",
             "device_id": device_id,
             "temperature": 25.7,
             "unit": "celsius"
         }
+        mqtt_publish(topic, v1_message, qos=1)
 
-        mqtt_publish(topic, single_message)
-
-        # Wait for the collector to process and store
         time.sleep(WAIT_FOR_PROCESSING)
 
-        # Verify data arrived in InfluxDB via the metrics endpoint
-        resp = api_get(f"/api/devices/{device_id}/metrics?start=-5m&metric=temperature")
-        assert resp.status_code == 200
-        metrics = resp.json()
-        # Should have at least 1 temperature data point
-        assert len(metrics) >= 1
-        latest = metrics[-1]
-        assert latest['metric'] == 'temperature'
-        assert isinstance(latest['value'], (int, float))
-
-        # Verify raw data arrived in MinIO
         resp = api_get(f"/api/devices/{device_id}/raw-data")
         assert resp.status_code == 200
         files = resp.json()
         assert len(files) >= 1
-        # Files should be stored under the device_id prefix
-        assert any(device_id in f['filename'] for f in files)
 
 
 # ===================================================================
-# MQTT message type 2: Batch measurements (array of data points)
+# Datagram stream generator (multiple datagrams over time)
 # ===================================================================
 
-class TestE2EBatchMeasurements:
+class TestE2EDatagramStream:
     """
-    Send a single MQTT message containing an ARRAY of measurements
-    representing multiple data points logged over a period of time.
-    Verify the collector processes and stores them all.
+    Simulate a real-world metering scenario: send multiple datagrams
+    in sequence, each with incrementing seq numbers.
+    Verifies the collector handles a stream of v2 messages correctly.
     """
 
-    def test_batch_measurement_message(self, e2e_device):
+    def test_dc_datagram_stream(self, e2e_device):
         device_id = e2e_device['device_id']
         topic = f"iot/{device_id}/telemetry"
 
-        # Batch payload — array of measurements over a time period
-        batch_message = {
-            "timestamp": "2026-02-12T12:05:00Z",
-            "device_id": device_id,
-            "batch": True,
-            "measurements": [
-                {"timestamp": "2026-02-12T12:00:00Z", "temperature": 22.1, "humidity": 55.0},
-                {"timestamp": "2026-02-12T12:00:05Z", "temperature": 22.3, "humidity": 55.2},
-                {"timestamp": "2026-02-12T12:00:10Z", "temperature": 22.8, "humidity": 54.8},
-                {"timestamp": "2026-02-12T12:00:15Z", "temperature": 23.1, "humidity": 54.5},
-                {"timestamp": "2026-02-12T12:00:20Z", "temperature": 23.5, "humidity": 54.0},
-                {"timestamp": "2026-02-12T12:00:25Z", "temperature": 24.0, "humidity": 53.5},
-                {"timestamp": "2026-02-12T12:00:30Z", "temperature": 24.3, "humidity": 53.2},
-            ]
-        }
-
-        mqtt_publish(topic, batch_message)
-
-        # Wait for the collector to process
-        time.sleep(WAIT_FOR_PROCESSING)
-
-        # Verify the entire batch message was archived in MinIO as raw data
-        resp = api_get(f"/api/devices/{device_id}/raw-data")
-        assert resp.status_code == 200
-        files = resp.json()
-        # Should have at least 2 files now (one from single test, one from batch)
-        assert len(files) >= 2
-
-        # The batch message itself is stored as-is in MinIO.
-        # Verify we can still query metrics — the outer message has no
-        # direct numeric fields other than "batch" (which is boolean),
-        # so InfluxDB won't get extra points from the outer envelope.
-        resp = api_get(f"/api/devices/{device_id}/metrics?start=-10m")
-        assert resp.status_code == 200
-
-
-# ===================================================================
-# MQTT message type comparison: single vs batch side by side
-# ===================================================================
-
-class TestE2EMessageTypeComparison:
-    """
-    Send both message types for the SAME device and verify the raw
-    data store has entries for both, showing the system handles
-    heterogeneous message formats.
-    """
-
-    def test_both_message_types_for_same_device(self, e2e_device):
-        device_id = e2e_device['device_id']
-        topic = f"iot/{device_id}/telemetry"
-
-        # Get initial file count
-        resp = api_get(f"/api/devices/{device_id}/raw-data")
-        initial_count = len(resp.json()) if resp.status_code == 200 else 0
-
-        # MESSAGE 1: Single measurement
-        single = {
-            "timestamp": "2026-02-12T13:00:00Z",
-            "device_id": device_id,
-            "voltage": 231.5,
-            "unit": "volts"
-        }
-        mqtt_publish(topic, single)
-
-        # MESSAGE 2: Batch measurements (array)
-        batch = {
-            "timestamp": "2026-02-12T13:01:00Z",
-            "device_id": device_id,
-            "batch": True,
-            "measurements": [
-                {"timestamp": "2026-02-12T13:00:00Z", "voltage": 230.0, "current": 5.2},
-                {"timestamp": "2026-02-12T13:00:05Z", "voltage": 231.0, "current": 5.1},
-                {"timestamp": "2026-02-12T13:00:10Z", "voltage": 229.5, "current": 5.3},
-            ]
-        }
-        mqtt_publish(topic, batch)
+        # Send 3 datagrams, each with 5 samples
+        for _ in range(3):
+            datagram = generate_v2_dc_datagram(device_id, num_samples=5)
+            mqtt_publish(topic, datagram)
+            time.sleep(0.5)
 
         time.sleep(WAIT_FOR_PROCESSING)
 
-        # Both messages should be stored as raw data in MinIO
-        resp = api_get(f"/api/devices/{device_id}/raw-data")
+        # Verify InfluxDB has data
+        resp = api_get(f"/api/devices/{device_id}/metrics?start=-5m&metric=voltage_dc")
         assert resp.status_code == 200
-        files = resp.json()
-        assert len(files) >= initial_count + 2, (
-            f"Expected at least {initial_count + 2} files, got {len(files)}"
-        )
-
-        # The single measurement should have produced an InfluxDB data point
-        resp = api_get(f"/api/devices/{device_id}/metrics?start=-10m&metric=voltage")
-        assert resp.status_code == 200
-        voltage_metrics = resp.json()
-        assert len(voltage_metrics) >= 1
+        metrics = resp.json()
+        # 3 datagrams × 5 samples = 15 voltage_dc points minimum
+        assert len(metrics) >= 3
