@@ -2,6 +2,7 @@ import os
 import json
 import time
 from datetime import datetime
+from io import BytesIO
 import paho.mqtt.client as mqtt
 from minio import Minio
 from influxdb_client import InfluxDBClient, Point
@@ -129,11 +130,11 @@ class MQTTCollector:
             }, indent=2)
             json_bytes = json_data.encode('utf-8')
             
-            # Upload to MinIO
+            # Upload to MinIO using BytesIO
             self.minio_client.put_object(
                 self.minio_bucket,
                 filename,
-                data=json_bytes,
+                data=BytesIO(json_bytes),
                 length=len(json_bytes),
                 content_type='application/json'
             )
