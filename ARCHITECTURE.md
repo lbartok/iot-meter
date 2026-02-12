@@ -179,9 +179,19 @@
 - Logs can be forwarded to centralized logging (ELK, Loki)
 
 ### Metrics
-- InfluxDB stores application metrics
-- Can be exposed via Prometheus exporters
-- Grafana dashboards for visualization
+- Prometheus scrapes `/metrics` endpoints from all services (device-manager, mqtt-collector)
+- 40+ custom application metrics (request rates, latencies, MQTT throughput, storage health)
+- kube-state-metrics for Kubernetes cluster state
+- 12 alerting rules across 5 groups (service health, API performance, MQTT pipeline, device alerts, Kubernetes)
+
+### Dashboards
+- Grafana auto-provisioned with "IoT Meter — Overview" dashboard (21 panels, 5 sections)
+- Panels cover: service health, HTTP traffic, MQTT pipeline, business metrics, Kubernetes cluster
+
+### Alerting
+- Alertmanager for routing, deduplication, and grouping
+- GitHub Issues integration via custom webhook receiver
+- Critical + warning severity routing with inhibition rules
 
 ### Health Checks
 - HTTP health endpoints
@@ -209,22 +219,11 @@
    - Predictive maintenance
    - Data aggregation pipelines
 
-3. **Alerting System**
-   - Real-time threshold monitoring
-   - Email/SMS notifications
-   - Webhook integrations
-
-4. **Dashboard UI**
+3. **Dashboard UI**
    - Web-based management interface
-   - Real-time data visualization
    - Device configuration UI
 
-5. **Edge Computing**
+4. **Edge Computing**
    - Edge data processing
    - Local data buffering
    - Offline operation support
-
-6. **Advanced Monitoring**
-   - Prometheus metrics export
-   - Grafana dashboards
-   - Distributed tracing

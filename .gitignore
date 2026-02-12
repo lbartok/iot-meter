@@ -44,3 +44,13 @@ Thumbs.db
 # Temporary files
 /tmp/
 *.tmp
+
+# Test artifacts
+test-results.txt
+test-results.xml
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Backup files
+backup_*.sql

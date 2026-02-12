@@ -30,7 +30,6 @@ data:
 
   # Simulator
   DEVICE_COUNT: "3"
-  PUBLISH_INTERVAL: "5"
 
   # Health check ports
   HEALTH_PORT_COLLECTOR: "8081"

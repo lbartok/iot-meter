@@ -36,11 +36,15 @@ jobs:
       - name: Build iot-device-simulator image
         run: docker build -t ${{ env.REGISTRY }}/iot-device-simulator:latest ./services/iot-device-simulator
 
+      - name: Build alertmanager-github-receiver image
+        run: docker build -t ${{ env.REGISTRY }}/alertmanager-github-receiver:latest ./services/alertmanager-github-receiver
+
       - name: Import images into k3s containerd
         run: |
           docker save ${{ env.REGISTRY }}/device-manager:latest | sudo k3s ctr images import -
           docker save ${{ env.REGISTRY }}/mqtt-collector:latest | sudo k3s ctr images import -
           docker save ${{ env.REGISTRY }}/iot-device-simulator:latest | sudo k3s ctr images import -
+          docker save ${{ env.REGISTRY }}/alertmanager-github-receiver:latest | sudo k3s ctr images import -
 
   # ──────────────────────────────────────────────────────────────
   # Stage 2: Run tests (gate deployment)
@@ -150,7 +154,7 @@ jobs:
 
       - name: Wait for rollouts
         run: |
-          for deploy in postgres minio influxdb mosquitto device-manager mqtt-collector; do
+          for deploy in postgres minio influxdb mosquitto device-manager mqtt-collector prometheus alertmanager grafana alertmanager-github-receiver; do
             echo "Waiting for $deploy..."
             sudo kubectl rollout status deployment/$deploy \
               -n ${{ env.K8S_NAMESPACE }} --timeout=180s

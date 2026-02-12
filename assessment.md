@@ -76,15 +76,13 @@ The sections below assess concrete improvements, each with **pros, cons, effort 
 | **Effort** | Medium — Python `structlog` + OTel SDK + collector sidecar. |
 | **Priority** | 🟡 **Medium** |
 
-### 3.3 Prometheus Metrics & Alerting
+### 3.3 Prometheus Metrics & Alerting — ✅ Implemented
 
 | Aspect | Detail |
 |--------|--------|
-| **What** | Expose `/metrics` endpoints (messages/sec, errors, latency histograms). Deploy Prometheus + Grafana. |
-| **Pros** | Real-time dashboards. Proactive alerting (e.g. collector lag). |
-| **Cons** | Additional K8s resources. Metric cardinality with many devices. |
-| **Effort** | Medium — `prometheus_flask_exporter` + Helm charts. |
-| **Priority** | 🟡 **Medium** |
+| **What** | `/metrics` endpoints on both services (40+ custom metrics). Prometheus + Grafana + Alertmanager deployed. |
+| **Status** | ✅ **Done** — `prometheus_client`, 12 alerting rules, Grafana dashboard (21 panels), GitHub Issues integration. |
+| **Priority** | ✅ **Complete** |
 
 ---
 
@@ -183,7 +181,7 @@ The sections below assess concrete improvements, each with **pros, cons, effort 
 | Phase | Items | Estimated Timeline |
 |-------|-------|--------------------|
 | **Phase 1 — Secure & Ship** | TLS (2.1), API Auth (2.2), ~~CI pipeline (6.1)~~ ✅ | 2–3 weeks |
-| **Phase 2 — Observe & Validate** | Prometheus (3.3), Structured logs (3.2), Schema validation (5.1), Topic ACLs (2.3) | 2–3 weeks |
+| **Phase 2 — Observe & Validate** | ~~Prometheus (3.3)~~ ✅, Structured logs (3.2), Schema validation (5.1), Topic ACLs (2.3) | 2–3 weeks |
 | **Phase 3 — Scale** | HPA (4.1), DB retention (4.3), Helm chart (6.2), Message queue (3.1) | 3–4 weeks |
 | **Phase 4 — Optimize** | CBOR payloads (5.2), Broker clustering (4.2), GitOps (6.3) | As needed |
 

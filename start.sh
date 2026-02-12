@@ -42,13 +42,14 @@ build_images() {
     docker build -t "${REGISTRY}/device-manager:latest"         ./services/device-manager
     docker build -t "${REGISTRY}/mqtt-collector:latest"         ./services/mqtt-collector
     docker build -t "${REGISTRY}/iot-device-simulator:latest"   ./services/iot-device-simulator
+    docker build -t "${REGISTRY}/alertmanager-github-receiver:latest" ./services/alertmanager-github-receiver
     ok "All images built"
 }
 
 # ---- Step 2: Deploy to Kubernetes -------------------------------------------
 deploy() {
     info "Deploying to Kubernetes (namespace: ${NAMESPACE})…"
-    kubectl apply -k k8s/
+    kubectl apply -k k8s/base/
     ok "Manifests applied"
 }
 

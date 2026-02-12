@@ -1,6 +1,6 @@
 # IoT Meter — TODO / Improvement Backlog
 
-> **Last Updated:** 2025-07
+> **Last Updated:** 2026-02-12
 
 ---
 
@@ -8,221 +8,308 @@
 
 | Status | Meaning |
 |--------|---------|
-| ⬜ | Not started |
-| 🔄 | In progress |
 | ✅ | Done |
+| ⬜ | Not started |
 
 ---
 
-## 🔴 Critical — Security & Data Integrity
+## ✅ Resolved
 
-### 1. ✅ Fix Flux query injection in `app.py`
+### ✅ R1. Fix Flux query injection in `app.py`
+Added `_sanitise_flux_id()` and `_sanitise_flux_time()` validators with regex
+allowlists. All Flux query inputs are validated before interpolation.
 
-**File:** `services/device-manager/app.py` — `get_device_metrics()`
+### ✅ R2. Add PostgreSQL connection pooling
+`psycopg2.pool.ThreadedConnectionPool` with lazy init via `_get_pool()`.
+Pool size: 2–10 connections (configurable via env vars).
 
-~~The `device_id`, `start`, `stop`, and `metric` parameters are interpolated directly
-into a Flux query string via f-string.~~
+### ✅ R3. Fix `datetime.utcnow()` deprecation
+Replaced all `datetime.utcnow()` with `datetime.now(timezone.utc)` in
+`services/device-manager/app.py` and `services/mqtt-collector/collector.py`.
 
-**Done:** Added `_sanitise_flux_id()` and `_sanitise_flux_time()` validators with
-regex allowlists. All Flux query inputs are validated before interpolation.
+### ✅ R4. Deduplicate DB boilerplate in `app.py`
+Added `get_db()` context manager yielding `(conn, cur)`. All 15+ endpoints
+refactored to use `with get_db() as (conn, cur):`.
 
-### 2. ✅ Add PostgreSQL connection pooling
+### ✅ R5. Create MQTT client once for command publishing
+Module-level `get_mqtt_client()` with `loop_start()` background thread.
+Reused for all command publishes.
+
+### ✅ R6. Add Prometheus metrics endpoints
+Both services expose `/metrics` via `prometheus_client`. 40+ custom metrics
+covering HTTP traffic, MQTT pipeline, storage backends, and business metrics.
+
+### ✅ R7. Add Grafana dashboard
+Auto-provisioned "IoT Meter — Overview" dashboard with 21 panels across 5
+sections (Service Health, HTTP Traffic, MQTT Pipeline, Business Metrics,
+Kubernetes Cluster).
+
+### ✅ R8. Add Docker health check dependencies
+`depends_on` with `condition: service_healthy` for all infrastructure services.
+Health checks defined for PostgreSQL, InfluxDB, MinIO, Mosquitto, Prometheus,
+Grafana, Alertmanager.
+
+### ✅ R9. Add Alertmanager & incident routing
+12 alerting rules across 5 groups. Alertmanager with GitHub Issues integration
+via custom webhook receiver. DRY_RUN mode for safe testing.
+
+### ✅ R10. Add k6 performance test suite
+`tests/performance/api_load_test.js` + `mqtt_publish_test.js`. Makefile
+targets: `perf-test`, `perf-test-api`, `perf-test-mqtt`.
+
+### ✅ R11. Set up CI/CD pipeline
+GitHub Actions 3-stage: Build → Test → Deploy. Self-hosted runner on k3s.
+
+### ✅ R12. Kubernetes deployment
+Kustomize base + production overlay. k3s single-node with hostPath PVs.
+
+### ✅ R13. Update .md files to match v2 reality
+All documentation updated for v2 payload, device types, API endpoints.
+
+### ✅ R14. Clean up stale code & configs (2026-02-12)
+- Deleted `test-results.txt` (stale CI artifact, now in `.gitignore`)
+- Removed dead `PUBLISH_INTERVAL` from docker-compose, configmap, .env.example
+- Fixed `start.sh` broken path (`k8s/` → `k8s/base/`), added 4th image build
+- Fixed `deploy.yml` CI — added alertmanager-github-receiver build + import
+- Updated `Makefile` — `docker-compose` → `docker compose` (v2 plugin syntax)
+- Eliminated duplicate Grafana dashboard JSON (symlink → single source of truth)
+- Fixed stale comments referencing `prometheus_flask_instrumentator`
+- Updated `ARCHITECTURE.md` — removed implemented items from "Future Enhancements,"
+  updated Monitoring section with Prometheus/Grafana/Alertmanager details
+- Updated `IMPLEMENTATION_SUMMARY.md` — marked Grafana + Prometheus as ✅ Done
+- Updated `assessment.md` — marked §3.3 Prometheus as ✅ Implemented, roadmap updated
+- Rewrote `examples/iot_device_client.py` — v1→v2 payload, paho-mqtt v1→v2 API
+- Rewrote `examples/test-api.sh` — updated device types/IDs to v2
+- Added `.gitignore` entries for test artifacts, backup files, `.pytest_cache`
+
+---
+
+## 🔴 Critical — Security
+
+### ⬜ S1. Add API authentication & authorization
+
+**Files:** `services/device-manager/app.py`
+
+Zero authentication on the REST API. Anyone with network access can
+create/delete devices, send commands, and read all data.
+
+**Fix:** Add JWT or API key authentication middleware. Implement RBAC.
+
+### ⬜ S2. Add MQTT TLS + client authentication
+
+**Files:** `config/mosquitto.conf`
+
+`allow_anonymous true` on plain port 1883. IoT.md §10 requires TLS 1.3
+and X.509 client certificates. No topic ACLs implemented.
+
+**Fix:** Configure TLS listener, generate CA + client certs, add ACL file.
+
+### ⬜ S3. Remove plaintext secrets from version control
+
+**Files:** `k8s/base/secrets.yaml`, `docker-compose.yml`, `.env.example`
+
+Dev passwords (`iot_password`, `minioadmin123`, `iot-admin-token-secret-12345`)
+committed in cleartext across multiple files.
+
+**Fix:** Use SealedSecrets or SOPS for K8s. For docker-compose, use `.env`
+(already gitignored) and remove all hardcoded values from `docker-compose.yml`.
+
+### ⬜ S4. Add non-root USER to Dockerfiles
+
+**Files:** All 4 `services/*/Dockerfile`
+
+Containers run as root by default. K8s manifests set `runAsNonRoot` for infra
+services but not for custom services.
+
+**Fix:** Add `RUN adduser --disabled-password --no-create-home appuser` and
+`USER appuser` to each Dockerfile. Add `securityContext` to K8s deployments.
+
+### ⬜ S5. Sanitize error responses — don't leak internals
 
 **File:** `services/device-manager/app.py`
 
-~~Every request opens a new `psycopg2.connect()` call and manually closes it.~~
+Every `except Exception as e: return jsonify({'error': str(e)})` exposes
+stack traces, DB errors, and internal paths to API consumers.
 
-**Done:** Added `psycopg2.pool.ThreadedConnectionPool` with lazy init via `_get_pool()`.
-Pool size: 2–10 connections (configurable via env vars).
-
-### 3. ✅ Fix `datetime.timezone.utc` — deprecation fix
-
-**Files:**
-- `services/device-manager/app.py`
-- `services/mqtt-collector/collector.py`
-
-~~`datetime.utcnow()` is deprecated in Python 3.12+.~~
-
-**Done:** Replaced all `datetime.utcnow()` with `datetime.now(timezone.utc)` in both
-files. Added `timezone` to imports.
+**Fix:** Return generic error messages. Log details server-side only.
 
 ---
 
 ## 🟠 High — Reliability & Performance
 
-### 4. ⬜ Bound in-memory dicts in collector
+### ⬜ H1. Bound in-memory dicts in collector
 
-**File:** `services/mqtt-collector/collector.py` — `_seq_tracker` (line 81),
-`_device_last_seen` (line 85)
+**File:** `services/mqtt-collector/collector.py` — `_seq_tracker`, `_device_last_seen`
 
-These dicts grow unbounded as new device IDs arrive. A malicious or misconfigured
-device fleet can cause OOM.
+These dicts grow unbounded as new device IDs arrive. A malicious or
+misconfigured device fleet can cause OOM.
 
-**Fix:** Use an LRU cache (`functools.lru_cache` or `cachetools.TTLCache`) with a
-configurable max size.
+**Fix:** Use `cachetools.TTLCache` with configurable max size.
 
-### 5. ✅ Deduplicate DB boilerplate in `app.py`
+### ⬜ H2. Add request/response validation
 
 **File:** `services/device-manager/app.py`
 
-~~15+ endpoints repeat the same `conn = get_db_connection(); try/except/finally
-conn.close()` pattern (~100 duplicate lines).~~
+POST/PUT endpoints accept arbitrary JSON without type/length/schema checks.
+Invalid data passes silently to PostgreSQL.
 
-**Done:** Added `get_db()` context manager yielding `(conn, cur)`. All 15+ endpoints
-refactored to use `with get_db() as (conn, cur):`. Combined with connection pool (#2).
+**Fix:** Add `pydantic` or `marshmallow` schemas for all request bodies.
 
-### 6. ⬜ Add request/response validation
-
-**File:** `services/device-manager/app.py`
-
-POST/PUT endpoints don't validate field types or lengths. Invalid data silently
-passes to PostgreSQL.
-
-**Fix:** Add `marshmallow` or `pydantic` schemas for request validation.
-
-### 7. ✅ Create MQTT client once for command publishing
+### ⬜ H3. Add API rate limiting
 
 **File:** `services/device-manager/app.py`
 
-~~A new MQTT client is created per command request. Under load this exhausts broker
-connections.~~
+No rate limiting on any endpoint, including device creation and command
+publishing.
 
-**Done:** Created module-level `_mqtt_client` with `get_mqtt_client()` lazy init.
-Client uses `loop_start()` background thread and is reused for all command publishes.
+**Fix:** Add `flask-limiter` with configurable per-endpoint limits.
+
+### ⬜ H4. Add pagination to list endpoints
+
+**File:** `services/device-manager/app.py`
+
+`GET /api/devices` and `GET /api/devices/{id}/alerts` return all records.
+With thousands of entries this is slow and memory-intensive.
+
+**Fix:** Add `?page=1&per_page=50` query parameters with cursor-based or
+offset pagination.
+
+### ⬜ H5. Use production WSGI server for collector & simulator
+
+**Files:** `services/mqtt-collector/collector.py`, `services/iot-device-simulator/simulator.py`
+
+Both run Flask's development server (`app.run()`) for health endpoints in
+production. Only device-manager uses gunicorn.
+
+**Fix:** Use `waitress` or `gunicorn` for the health server in collector and
+simulator.
+
+### ⬜ H6. Add health checks for custom services in docker-compose
+
+**File:** `docker-compose.yml`
+
+Infrastructure services have `healthcheck` definitions. Custom services
+(device-manager, mqtt-collector, iot-simulator, alertmanager-github-receiver) don't.
+
+**Fix:** Add `healthcheck` blocks using each service's `/health` endpoint.
+
+### ⬜ H7. Fix remaining `datetime.now()` without timezone
+
+**File:** `services/mqtt-collector/collector.py` — `store_to_minio`
+
+Uses `datetime.now().isoformat()` (no timezone) while the rest of the codebase
+uses `datetime.now(timezone.utc)`. Inconsistent timestamp format in MinIO.
+
+**Fix:** Change to `datetime.now(timezone.utc).isoformat()`.
 
 ---
 
 ## 🟡 Medium — Code Quality & Maintainability
 
-### 8. ⬜ Add type hints to all service files
+### ⬜ M1. Add type hints to all service files
 
 **Files:**
-- `services/device-manager/app.py` (724 lines — 0 type hints)
-- `services/mqtt-collector/collector.py` (407 lines — 0 type hints)
-- `services/iot-device-simulator/simulator.py` (486 lines — partial)
+- `services/device-manager/app.py`
+- `services/mqtt-collector/collector.py`
+- `services/iot-device-simulator/simulator.py`
 
-**Fix:** Add `-> None`, `-> dict`, `-> tuple[Response, int]`, etc. Run `mypy` in CI.
+**Fix:** Add return types, parameter types. Run `mypy` in CI.
 
-### 9. ⬜ Add structured JSON logging
+### ⬜ M2. Add structured JSON logging
 
-**Files:** All 3 services use `logging.basicConfig()` with plain text format.
+**Files:** All services using `logging.basicConfig()` with plain text.
 
-**Fix:** Switch to `structlog` or `python-json-logger`. Add `request_id`, `device_id`
-as structured fields. Makes log aggregation (ELK, Loki) much easier.
+**Fix:** Switch to `structlog` or `python-json-logger`. Add `request_id`,
+`device_id` as structured fields for log aggregation.
 
-### 10. ⬜ Add `__all__` exports and module docstrings
-
-**Files:** All 3 service entry-point files.
-
-**Fix:** Add module-level docstrings and `__all__` lists.
-
-### 11. ⬜ Add DB migration framework
-
-**File:** `config/init-db.sql`
-
-Schema changes require manual SQL editing and full re-deploy. No version tracking.
-
-**Fix:** Add Alembic (or simple numbered migration files) for versioned schema
-migrations.
-
-### 12. ⬜ Add linting to CI pipeline
+### ⬜ M3. Add linting/formatting to CI
 
 **File:** `.github/workflows/deploy.yml`
 
 CI runs tests but not linters. Code style inconsistencies creep in.
 
-**Fix:** Add `ruff` (or `flake8` + `black`) as a CI step before tests.
+**Fix:** Add `ruff` (lint + format) as a CI step before tests.
+
+### ⬜ M4. Add DB migration framework
+
+**File:** `config/init-db.sql`
+
+Schema changes require manual SQL editing and full re-deploy.
+
+**Fix:** Add Alembic for versioned schema migrations.
+
+### ⬜ M5. Add `.dockerignore` files
+
+**Files:** All 4 `services/*/` directories.
+
+Every `docker build` sends `__pycache__/`, `.git`, etc. as build context.
+
+**Fix:** Add `.dockerignore` to each service directory.
+
+### ⬜ M6. Align `requests` package version across files
+
+- `services/alertmanager-github-receiver/requirements.txt` → `2.32.3`
+- `examples/requirements.txt` → `2.32.5`
+- `requirements-test.txt` → `2.32.5`
+
+**Fix:** Pin all to the same version.
+
+### ⬜ M7. Add module docstrings and `__all__` exports
+
+**Files:** All 3 service entry-point files.
+
+**Fix:** Add module-level docstrings and `__all__` lists.
+
+### ⬜ M8. DRY — single-source Prometheus alert rules
+
+**Files:** `config/alert_rules.yml` vs inline in `k8s/base/prometheus.yaml`
+
+Alert rules are duplicated. Docker Compose reads the file; K8s inlines the
+content in the ConfigMap. Changes must be made in both places.
+
+**Fix:** Extract inline rules from `prometheus.yaml`. Use a kustomize
+`configMapGenerator` to include `config/alert_rules.yml` as a separate
+ConfigMap key (similar to how the Grafana dashboard is handled).
+
+### ⬜ M9. DRY — single-source Alertmanager config
+
+**Files:** `config/alertmanager.yml` vs inline in `k8s/base/alertmanager.yaml`
+
+Same duplication issue as M8.
+
+**Fix:** Use kustomize `configMapGenerator` referencing `config/alertmanager.yml`.
 
 ---
 
 ## 🟢 Low — Nice-to-Have
 
-### 13. ⬜ Add `LICENSE` file
+### ⬜ L1. Add `LICENSE` file
 
-The README says "MIT License — See LICENSE file" but no LICENSE file exists.
+README says "MIT License — See LICENSE file" but no file exists.
 
-**Fix:** Create `LICENSE` with MIT text.
+### ⬜ L2. Create `CHANGELOG.md`
 
-### 14. ⬜ Create `CHANGELOG.md`
+No changelog. Hard to track what changed between deployments.
 
-No changelog exists. Hard to track what changed between deployments.
+### ⬜ L3. Add `CODEOWNERS` file
 
-**Fix:** Create `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/).
+Ensures PR reviews are routed to the right people.
 
-### 15. ⬜ Add Prometheus metrics endpoint
+### ⬜ L4. Consistent `imagePullPolicy` across K8s manifests
 
-**Files:** `services/device-manager/app.py`, `services/mqtt-collector/collector.py`
+`device-manager` uses `IfNotPresent` while `alertmanager-github-receiver`
+uses `Never`. Both are locally-built images. Should be consistent.
 
-No `/metrics` endpoint for monitoring. Can't track request rates, latencies, error
-rates, or collector throughput.
+### ⬜ L5. Validate e2e tests still work
 
-**Fix:** Add `prometheus_flask_exporter` to device-manager, custom Prometheus counters
-to collector.
+`tests/e2e/test_e2e.py` exists but hasn't been verified recently.
+May be broken against the current v2 API.
 
-### 16. ⬜ Add Grafana dashboard template
+### ⬜ L6. Remove hardcoded default credentials from service code
 
-No dashboard template exists for visualising InfluxDB metrics.
+**File:** `services/device-manager/app.py`
 
-**Fix:** Create `config/grafana/` with a JSON dashboard template.
+`os.getenv('INFLUXDB_TOKEN', 'iot-admin-token-secret-12345')` silently
+falls back to an insecure default if the env var is missing.
 
-### 17. ⬜ Add health check dependencies to Docker Compose
-
-**File:** `docker-compose.yml`
-
-Services don't wait for their dependencies (PostgreSQL, InfluxDB) to be healthy
-before starting.
-
-**Fix:** Add `healthcheck` + `depends_on.condition: service_healthy` for all services.
-
-### 18. ✅ Add k6 performance test suite
-
-**Directory:** `tests/performance/`
-
-~~No performance/load tests exist.~~
-
-**Done:** Created `api_load_test.js` (9 endpoint groups, 4-stage ramp), `mqtt_publish_test.js`
-(ingestion + dashboard scenarios), `README.md`, and Makefile targets (`perf-test`,
-`perf-test-api`, `perf-test-mqtt`).
-
----
-
-## ✅ Recently Completed
-
-### ✅ App.py — Critical improvements (items #1–3, #5, #7)
-- **#1 Flux injection fix:** Added `_sanitise_flux_id()` / `_sanitise_flux_time()` regex
-  validators for all Flux query inputs
-- **#2 Connection pooling:** `psycopg2.pool.ThreadedConnectionPool` with lazy init,
-  2–10 pool size
-- **#3 datetime deprecation:** All `datetime.utcnow()` → `datetime.now(timezone.utc)`
-  in app.py and collector.py
-- **#5 DB boilerplate:** `get_db()` context manager replaces 15+ try/finally blocks
-- **#7 MQTT client reuse:** Module-level `get_mqtt_client()` with `loop_start()`
-
-### ✅ k6 performance test suite (#18)
-- `tests/performance/api_load_test.js` — 9 endpoint groups, 4-stage ramp
-- `tests/performance/mqtt_publish_test.js` — ingestion + dashboard scenarios
-- `tests/performance/README.md` — documentation
-- Makefile targets: `perf-test`, `perf-test-api`, `perf-test-mqtt`
-
-### ✅ Update .md files to match v2 reality
-- README.md: Fixed v1→v2 payload, 5 MQTT topics, 5 DB tables, `generate_sample()`,
-  `power_meter_dc`/`power_meter_ac`, MinIO category paths, added missing API endpoints,
-  fixed test counts (126)
-- ARCHITECTURE.md: Fixed Python 3.11→3.13, removed "async" claims, added K8s/CI
-- IMPLEMENTATION_SUMMARY.md: Fixed "Next Steps" (K8s/CI marked done), updated line
-  counts, 5 topics/tables
-- assessment.md: Marked CI pipeline as implemented
-- QUICKSTART.md: Fixed v1→v2 examples and device types
-- examples/README.md: Fixed v1→v2 payload format and device types
-
-### ✅ Set up CI/CD pipeline
-- GitHub Actions 3-stage pipeline (build → test → deploy)
-- Self-hosted runner on k3s
-
-### ✅ Kubernetes production deployment
-- Kustomize base + production overlay
-- k3s single-node with hostPath PVs
-- PRODUCTION.md runbook
-
-### ✅ GitHub Secrets management
-- 8 secrets + 1 variable configured via `gh` CLI
+**Fix:** Make required env vars fail fast with a clear error on startup.

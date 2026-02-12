@@ -7,10 +7,10 @@ help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: ## Build all Docker images
-	docker-compose build
+	docker compose build
 
 up: ## Start all services
-	docker-compose up -d
+	docker compose up -d
 	@echo "Services starting..."
 	@echo "Waiting for services to be ready..."
 	@sleep 10
@@ -24,40 +24,40 @@ up: ## Start all services
 	@echo "Run 'make status' to check service status"
 
 down: ## Stop all services
-	docker-compose down
+	docker compose down
 
 down-volumes: ## Stop all services and remove volumes
-	docker-compose down -v
+	docker compose down -v
 
 logs: ## Show logs from all services
-	docker-compose logs -f
+	docker compose logs -f
 
 logs-collector: ## Show logs from MQTT collector
-	docker-compose logs -f mqtt-collector
+	docker compose logs -f mqtt-collector
 
 logs-manager: ## Show logs from Device Manager
-	docker-compose logs -f device-manager
+	docker compose logs -f device-manager
 
 logs-simulator: ## Show logs from IoT simulator
-	docker-compose logs -f iot-simulator
+	docker compose logs -f iot-simulator
 
 status: ## Show status of all services
-	docker-compose ps
+	docker compose ps
 
 restart: ## Restart all services
-	docker-compose restart
+	docker compose restart
 
 restart-collector: ## Restart MQTT collector
-	docker-compose restart mqtt-collector
+	docker compose restart mqtt-collector
 
 restart-manager: ## Restart Device Manager
-	docker-compose restart device-manager
+	docker compose restart device-manager
 
 restart-simulator: ## Restart IoT simulator
-	docker-compose restart iot-simulator
+	docker compose restart iot-simulator
 
 clean: ## Stop services and clean up everything
-	docker-compose down -v
+	docker compose down -v
 	docker system prune -f
 
 test-api: ## Test Device Manager API
@@ -95,7 +95,7 @@ backup-db: ## Backup PostgreSQL database
 	@echo "Database backed up to backup_$$(date +%Y%m%d_%H%M%S).sql"
 
 dev: ## Start in development mode with logs
-	docker-compose up
+	docker compose up
 
 rebuild: down build up ## Rebuild and restart all services
 
@@ -231,7 +231,7 @@ prom-targets: ## Show Prometheus scrape target status
 	@curl -s http://localhost:9091/api/v1/targets | python3 -m json.tool 2>/dev/null || echo "Prometheus not reachable at localhost:9091"
 
 prom-logs: ## Show Prometheus container logs
-	docker-compose logs -f prometheus
+	docker compose logs -f prometheus
 
 k8s-port-forward-prom: ## Port-forward Prometheus to localhost:9091 (K8s)
 	kubectl port-forward svc/prometheus 9091:9090 -n $(K8S_NAMESPACE)
@@ -243,7 +243,7 @@ grafana-open: ## Open Grafana dashboard in browser (Docker Compose)
 	@open http://localhost:3000 2>/dev/null || xdg-open http://localhost:3000 2>/dev/null || echo "Visit http://localhost:3000"
 
 grafana-logs: ## Show Grafana container logs
-	docker-compose logs -f grafana
+	docker compose logs -f grafana
 
 k8s-port-forward-grafana: ## Port-forward Grafana to localhost:3000 (K8s)
 	kubectl port-forward svc/grafana 3000:3000 -n $(K8S_NAMESPACE)
@@ -255,7 +255,7 @@ alertmanager-open: ## Open Alertmanager in browser (Docker Compose)
 	@open http://localhost:9093 2>/dev/null || xdg-open http://localhost:9093 2>/dev/null || echo "Visit http://localhost:9093"
 
 alertmanager-logs: ## Show Alertmanager container logs
-	docker-compose logs -f alertmanager
+	docker compose logs -f alertmanager
 
 k8s-port-forward-alertmanager: ## Port-forward Alertmanager to localhost:9093 (K8s)
 	kubectl port-forward svc/alertmanager 9093:9093 -n $(K8S_NAMESPACE)

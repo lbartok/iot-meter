@@ -259,12 +259,12 @@ iot-meter/
    - Real-time alerting with notifications
    - Data analytics and anomaly detection
    - Web-based management dashboard
-   - Grafana integration for visualization
+   - ~~Grafana integration for visualization~~ ✅ Done (auto-provisioned dashboard with 21 panels)
 
 3. **Production Hardening**
    - ~~Kubernetes deployment manifests~~ ✅ Done (Kustomize base + production overlay)
    - ~~CI/CD pipeline setup~~ ✅ Done (GitHub Actions: build → test → deploy)
-   - Monitoring and observability stack (Prometheus, Grafana)
+   - ~~Monitoring and observability stack (Prometheus, Grafana)~~ ✅ Done (Prometheus + Grafana + Alertmanager + 12 alert rules)
    - ~~Backup and disaster recovery~~ ✅ Documented in PRODUCTION.md
 
 4. **Scalability**
