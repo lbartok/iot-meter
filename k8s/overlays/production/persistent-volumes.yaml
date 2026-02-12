@@ -1,0 +1,88 @@
+---
+# PersistentVolumes backed by ZFS host paths
+# These map to directories under /opt/iot-meter/data/ on the host
+# The host VM is fully ZFS-backed, so all data benefits from
+# ZFS checksumming, compression, and snapshot capabilities.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-data-pv
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: iot-meter-local
+  hostPath:
+    path: /opt/iot-meter/data/postgres
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: iot-meter
+    name: postgres-data-pvc
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: minio-data-pv
+  labels:
+    app: minio
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: iot-meter-local
+  hostPath:
+    path: /opt/iot-meter/data/minio
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: iot-meter
+    name: minio-data-pvc
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: influxdb-data-pv
+  labels:
+    app: influxdb
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: iot-meter-local
+  hostPath:
+    path: /opt/iot-meter/data/influxdb
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: iot-meter
+    name: influxdb-data-pvc
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mosquitto-data-pv
+  labels:
+    app: mosquitto
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: iot-meter-local
+  hostPath:
+    path: /opt/iot-meter/data/mosquitto
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: iot-meter
+    name: mosquitto-data-pvc

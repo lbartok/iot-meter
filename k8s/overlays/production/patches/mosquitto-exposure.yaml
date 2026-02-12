@@ -1,0 +1,19 @@
+---
+# Expose MQTT port 1883 on the host via hostPort
+# Devices connect from the internet directly to port 1883
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mosquitto
+  namespace: iot-meter
+spec:
+  template:
+    spec:
+      containers:
+        - name: mosquitto
+          ports:
+            - containerPort: 1883
+              name: mqtt
+              hostPort: 1883
+            - containerPort: 9001
+              name: websocket

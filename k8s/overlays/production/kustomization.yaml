@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: iot-meter
+
+resources:
+  - ../../base
+  - persistent-volumes.yaml
+
+patchesStrategicMerge:
+  - patches/mosquitto-exposure.yaml
+  - patches/device-manager-nodeport.yaml
+  - patches/simulator-replicas.yaml
+  - patches/pvc-storage-class.yaml

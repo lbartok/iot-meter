@@ -1,0 +1,15 @@
+---
+# Expose device-manager via NodePort for NPM reverse proxy
+# NPM proxies https://iot.bartok.sk -> http://192.168.111.143:30080
+apiVersion: v1
+kind: Service
+metadata:
+  name: device-manager
+  namespace: iot-meter
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080

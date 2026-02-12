@@ -1,0 +1,11 @@
+---
+# Simulator replica count — overwritten by CI/CD pipeline
+# Set to 0 to disable, 1 to enable
+# The GitHub Actions workflow writes this value based on vars.DEPLOY_SIMULATOR
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iot-simulator
+  namespace: iot-meter
+spec:
+  replicas: 1

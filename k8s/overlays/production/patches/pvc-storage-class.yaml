@@ -1,0 +1,54 @@
+---
+# Override PVC storage classes to use iot-meter-local (hostPath PVs)
+# instead of the default dynamic provisioner
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data-pvc
+  namespace: iot-meter
+spec:
+  storageClassName: iot-meter-local
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data-pvc
+  namespace: iot-meter
+spec:
+  storageClassName: iot-meter-local
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: influxdb-data-pvc
+  namespace: iot-meter
+spec:
+  storageClassName: iot-meter-local
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mosquitto-data-pvc
+  namespace: iot-meter
+spec:
+  storageClassName: iot-meter-local
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
