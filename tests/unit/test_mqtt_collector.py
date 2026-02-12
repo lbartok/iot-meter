@@ -121,7 +121,14 @@ class TestMQTTCollectorCallbacks:
         mock_client = MagicMock()
         collector.on_connect(mock_client, None, None, 0, None)
         assert collector.mqtt_connected is True
-        mock_client.subscribe.assert_called_once()
+        # v2 collector subscribes to 5 topics
+        assert mock_client.subscribe.call_count == 5
+        subscribed_topics = [call.args[0] for call in mock_client.subscribe.call_args_list]
+        assert 'iot/+/telemetry' in subscribed_topics
+        assert 'iot/+/hello' in subscribed_topics
+        assert 'iot/+/status' in subscribed_topics
+        assert 'iot/+/command/ack' in subscribed_topics
+        assert 'iot/+/ota/status' in subscribed_topics
 
     @patch('collector.Minio')
     @patch('collector.InfluxDBClient')
