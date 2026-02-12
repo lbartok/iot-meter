@@ -72,7 +72,9 @@ All documentation updated for v2 payload, device types, API endpoints.
 - Fixed `start.sh` broken path (`k8s/` → `k8s/base/`), added 4th image build
 - Fixed `deploy.yml` CI — added alertmanager-github-receiver build + import
 - Updated `Makefile` — `docker-compose` → `docker compose` (v2 plugin syntax)
-- Eliminated duplicate Grafana dashboard JSON (symlink → single source of truth)
+- ~~Eliminated duplicate Grafana dashboard JSON (symlink)~~ reverted — kustomize
+  rejects symlinks escaping the base directory. Dashboard JSON remains duplicated
+  in `config/grafana/dashboards/` and `k8s/base/`
 - Fixed stale comments referencing `prometheus_flask_instrumentator`
 - Updated `ARCHITECTURE.md` — removed implemented items from "Future Enhancements,"
   updated Monitoring section with Prometheus/Grafana/Alertmanager details
