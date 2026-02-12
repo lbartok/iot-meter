@@ -81,10 +81,10 @@ docker-compose logs -f mqtt-collector
 
 #### Check MQTT Messages
 ```bash
-# Subscribe to all device telemetry
+# Subscribe to all device topics
 make subscribe-mqtt
 # or
-docker exec -it iot-mosquitto mosquitto_sub -t "iot/+/telemetry"
+docker exec -it iot-mosquitto mosquitto_sub -t "iot/+/telemetry" -t "iot/+/hello" -t "iot/+/status"
 ```
 
 ### 5. Access Web Interfaces
@@ -105,17 +105,17 @@ Open in your browser:
 
 #### Get a specific device:
 ```bash
-curl http://localhost:8080/api/devices/device-001 | python3 -m json.tool
+curl http://localhost:8080/api/devices/dc-meter-001 | python3 -m json.tool
 ```
 
 #### Get device metrics (last hour):
 ```bash
-curl "http://localhost:8080/api/devices/device-001/metrics" | python3 -m json.tool
+curl "http://localhost:8080/api/devices/dc-meter-001/metrics" | python3 -m json.tool
 ```
 
 #### Get raw data files for a device:
 ```bash
-curl http://localhost:8080/api/devices/device-001/raw-data | python3 -m json.tool
+curl http://localhost:8080/api/devices/dc-meter-001/raw-data | python3 -m json.tool
 ```
 
 #### Create a new device:
@@ -123,10 +123,10 @@ curl http://localhost:8080/api/devices/device-001/raw-data | python3 -m json.too
 curl -X POST http://localhost:8080/api/devices \
   -H "Content-Type: application/json" \
   -d '{
-    "device_id": "device-100",
-    "device_name": "Test Temperature Sensor",
-    "device_type": "temperature",
-    "location": "Test Lab"
+    "device_id": "dc-meter-100",
+    "device_name": "DC Traction Meter — Train 9000",
+    "device_type": "power_meter_dc",
+    "location": "Train 9000 / Car 1 / Main DC Bus"
   }' | python3 -m json.tool
 ```
 
@@ -137,13 +137,13 @@ Publish a test MQTT message:
 make test-mqtt
 # or
 docker exec iot-mosquitto mosquitto_pub \
-  -t "iot/device-100/telemetry" \
-  -m '{"timestamp":"2026-02-12T16:00:00.000Z","device_id":"device-100","temperature":22.5}'
+  -t "iot/dc-meter-100/telemetry" \
+  -m '{"v":2,"device_id":"dc-meter-100","ts":"2026-02-12T16:00:00.000Z","seq":1,"msg_type":"telemetry","measurements":[{"ts":"2026-02-12T16:00:00.000Z","type":"voltage_dc","val":752.3,"unit":"V"}]}'
 ```
 
 Wait a few seconds, then check if the data appears:
 ```bash
-curl "http://localhost:8080/api/devices/device-100/metrics" | python3 -m json.tool
+curl "http://localhost:8080/api/devices/dc-meter-100/metrics" | python3 -m json.tool
 ```
 
 ## Common Commands

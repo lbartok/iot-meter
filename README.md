@@ -102,28 +102,28 @@ curl http://localhost:8080/api/devices/device-001
 curl -X POST http://localhost:8080/api/devices \
   -H "Content-Type: application/json" \
   -d '{
-    "device_id": "device-004",
-    "device_name": "New Sensor",
-    "device_type": "temperature",
-    "location": "Building C",
+    "device_id": "dc-meter-004",
+    "device_name": "DC Traction Meter — Train 9000",
+    "device_type": "power_meter_dc",
+    "location": "Train 9000 / Car 1 / Main DC Bus",
     "status": "active",
-    "metadata": {"sampling_rate": "5s"}
+    "metadata": {"voltage_system": "DC 750V", "accuracy_class": "0.5R"}
   }'
 ```
 
 #### Update Device
 ```bash
-curl -X PUT http://localhost:8080/api/devices/device-004 \
+curl -X PUT http://localhost:8080/api/devices/dc-meter-004 \
   -H "Content-Type: application/json" \
   -d '{
-    "device_name": "Updated Sensor",
-    "location": "Building D"
+    "device_name": "Updated DC Meter",
+    "location": "Train 9000 / Car 2"
   }'
 ```
 
 #### Delete Device
 ```bash
-curl -X DELETE http://localhost:8080/api/devices/device-004
+curl -X DELETE http://localhost:8080/api/devices/dc-meter-004
 ```
 
 #### Device Heartbeat
@@ -176,6 +176,52 @@ curl -X POST http://localhost:8080/api/devices/device-001/alerts \
 curl -X POST http://localhost:8080/api/alerts/1/acknowledge
 ```
 
+### Health & Readiness Endpoints
+
+```bash
+# Liveness probe
+curl http://localhost:8080/healthz
+
+# Readiness probe (checks DB + InfluxDB + MinIO)
+curl http://localhost:8080/readyz
+```
+
+### Device Status & Commands
+
+#### Get Device Status
+```bash
+curl http://localhost:8080/api/devices/dc-meter-001/status
+```
+
+#### Update Device Status
+```bash
+curl -X PUT http://localhost:8080/api/devices/dc-meter-001/status \
+  -H "Content-Type: application/json" \
+  -d '{"connection_status": "online"}'
+```
+
+#### Send Command to Device
+```bash
+curl -X POST http://localhost:8080/api/devices/dc-meter-001/commands \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cmd": "set_interval",
+    "params": {"interval_s": 5}
+  }'
+```
+
+#### Get Device Commands
+```bash
+curl http://localhost:8080/api/devices/dc-meter-001/commands
+```
+
+#### Acknowledge Command
+```bash
+curl -X PUT http://localhost:8080/api/commands/{cmd_id}/ack \
+  -H "Content-Type: application/json" \
+  -d '{"status": "accepted"}'
+```
+
 ### Statistics Endpoint
 
 ```bash
@@ -184,26 +230,35 @@ curl http://localhost:8080/api/stats
 
 ## MQTT Topics
 
-The system uses the following MQTT topic structure:
+The system uses a v2 topic structure with five topic categories (see IoT.md §3.1):
 
 ```
-iot/{device_id}/telemetry
+iot/{device_id}/telemetry       # Measurement datagrams
+iot/{device_id}/hello            # Heartbeat / hello messages
+iot/{device_id}/status           # Online/offline (LWT)
+iot/{device_id}/command/ack      # Command acknowledgements
+iot/{device_id}/ota/status       # OTA progress reports
 ```
 
 Example:
-- `iot/device-001/telemetry`
-- `iot/device-002/telemetry`
+- `iot/dc-meter-001/telemetry`
+- `iot/ac-meter-001/hello`
 
 ### Message Format
 
-IoT devices should publish JSON messages in the following format:
+IoT devices publish v2 JSON datagrams in the following format:
 
 ```json
 {
-  "timestamp": "2026-02-12T16:00:00.000Z",
-  "device_id": "device-001",
-  "temperature": 23.5,
-  "unit": "celsius"
+  "v": 2,
+  "device_id": "dc-meter-001",
+  "ts": "2026-02-12T16:00:00.000Z",
+  "seq": 42,
+  "msg_type": "telemetry",
+  "measurements": [
+    {"ts": "2026-02-12T16:00:00.000Z", "type": "voltage_dc", "val": 752.3, "unit": "V"},
+    {"ts": "2026-02-12T16:00:00.000Z", "type": "current_dc", "val": 312.7, "unit": "A"}
+  ]
 }
 ```
 
@@ -213,8 +268,8 @@ IoT devices should publish JSON messages in the following format:
 
 ```bash
 docker exec -it iot-mosquitto mosquitto_pub \
-  -t "iot/device-001/telemetry" \
-  -m '{"timestamp":"2026-02-12T16:00:00.000Z","device_id":"device-001","temperature":23.5}'
+  -t "iot/dc-meter-001/telemetry" \
+  -m '{"v":2,"device_id":"dc-meter-001","ts":"2026-02-12T16:00:00.000Z","seq":1,"msg_type":"telemetry","measurements":[{"ts":"2026-02-12T16:00:00.000Z","type":"voltage_dc","val":752.3,"unit":"V"}]}'
 ```
 
 ### Subscribe to messages
@@ -226,19 +281,21 @@ docker exec -it iot-mosquitto mosquitto_sub \
 
 ## Database Schema
 
-### PostgreSQL Tables
+### PostgreSQL Tables (5 tables)
 
 #### devices
 - `id`: Serial primary key
 - `device_id`: Unique device identifier
 - `device_name`: Human-readable name
-- `device_type`: Type of device
+- `device_type`: Type of device (`power_meter_dc`, `power_meter_ac`)
 - `location`: Physical location
 - `status`: Current status (active/inactive)
+- `connection_status`: Online/offline/unknown (IoT.md §5)
+- `last_seen`: Last heartbeat timestamp
+- `fw_version`: Firmware version
 - `created_at`: Creation timestamp
 - `updated_at`: Last update timestamp
-- `last_seen`: Last heartbeat timestamp
-- `metadata`: JSON metadata
+- `metadata`: JSONB metadata
 
 #### device_configs
 - Configuration key-value pairs for devices
@@ -246,14 +303,23 @@ docker exec -it iot-mosquitto mosquitto_sub \
 #### device_alerts
 - Alert history for devices
 
+#### device_commands
+- Server→device command queue with status tracking (IoT.md §6)
+- Fields: `cmd_id` (UUID), `cmd`, `params` (JSONB), `status`, `ack_detail`, `acked_at`
+
+#### device_seq_tracking
+- Per-device sequence number tracking for deduplication (IoT.md §2.2)
+
 ## Data Storage
 
 ### MinIO (S3)
 
-Raw telemetry data is stored in MinIO at:
+Raw data is stored in MinIO, partitioned by device and message category:
 ```
-s3://iot-data/{device_id}/{timestamp}.json
+s3://iot-data/{device_id}/{category}/{timestamp}.json
 ```
+
+Categories: `telemetry`, `hello`, `status`, `command_ack`, `ota_status`.
 
 Access the MinIO console at http://localhost:9090 to browse files.
 
@@ -442,16 +508,16 @@ python -m pytest tests/unit tests/integration --cov=services --cov-report=html
 
 ### Test Results
 
-The latest test run produced the following results (68 tests):
+The latest test run produced the following results (146 tests):
 
 ```
-tests/unit/test_device_manager.py    — 34 passed
-tests/unit/test_mqtt_collector.py    — 15 passed
-tests/unit/test_simulator.py         — 11 passed
-tests/integration/test_integration.py —  6 passed
-tests/e2e/test_e2e.py               — 12 tests (require running infrastructure)
+tests/unit/test_device_manager.py    — 50 passed
+tests/unit/test_mqtt_collector.py    — 31 passed
+tests/unit/test_simulator.py         — 35 passed
+tests/integration/test_integration.py — 10 passed
+tests/e2e/test_e2e.py               — 20 tests (require running infrastructure)
 
-Total: 66 passed (unit + integration), 2 skipped (e2e infra-dependent)
+Total: 126 passed (unit + integration), e2e requires running services
 ```
 
 > E2E tests are skipped automatically when the target services are not reachable.
@@ -510,7 +576,7 @@ iot-meter/
 ### Adding New Device Types
 
 1. Update the simulator in `services/iot-device-simulator/simulator.py`
-2. Add device type handling in the `generate_telemetry()` method
+2. Add device type handling in the `generate_sample()` method
 3. Update device creation in PostgreSQL
 
 ### Customizing the Collector

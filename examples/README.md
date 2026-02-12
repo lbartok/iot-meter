@@ -32,8 +32,8 @@ python iot_device_client.py
 
 # Custom configuration
 python iot_device_client.py \
-  --device-id my-device \
-  --device-type temperature \
+  --device-id dc-meter-test \
+  --device-type power_meter_dc \
   --broker localhost \
   --port 1883 \
   --interval 10 \
@@ -42,7 +42,7 @@ python iot_device_client.py \
 
 **Options:**
 - `--device-id`: Unique device identifier (default: device-custom-001)
-- `--device-type`: Type of device (temperature, humidity, power, generic)
+- `--device-type`: Type of device (`power_meter_dc`, `power_meter_ac`, `generic`)
 - `--broker`: MQTT broker host (default: localhost)
 - `--port`: MQTT broker port (default: 1883)
 - `--interval`: Publish interval in seconds (default: 5)
@@ -50,10 +50,10 @@ python iot_device_client.py \
 
 **Example:**
 ```bash
-# Simulate a temperature sensor for 2 minutes
+# Simulate a DC traction power meter for 2 minutes
 python iot_device_client.py \
-  --device-id temp-sensor-lab-01 \
-  --device-type temperature \
+  --device-id dc-meter-lab-01 \
+  --device-type power_meter_dc \
   --interval 5 \
   --duration 120
 ```
@@ -83,14 +83,14 @@ devices = client.get_devices()
 
 # Create a device
 device = client.create_device(
-    device_id="my-device",
-    device_name="My Sensor",
-    device_type="temperature",
-    location="Lab Room 1"
+    device_id="dc-meter-test",
+    device_name="DC Traction Meter — Test",
+    device_type="power_meter_dc",
+    location="Test Lab"
 )
 
 # Get metrics
-metrics = client.get_metrics("my-device", start="-1h")
+metrics = client.get_metrics("dc-meter-test", start="-1h")
 
 # Create alert
 alert = client.create_alert(
@@ -111,15 +111,15 @@ curl -X POST http://localhost:8080/api/devices \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": "sensor-001",
-    "device_name": "Office Temperature Sensor",
-    "device_type": "temperature",
-    "location": "Office Floor 2"
+    "device_name": "DC Traction Meter — Sensor 001",
+    "device_type": "power_meter_dc",
+    "location": "Train 1234 / Car 1"
   }'
 
 # 2. Start publishing data
 python iot_device_client.py \
   --device-id sensor-001 \
-  --device-type temperature \
+  --device-type power_meter_dc \
   --interval 10
 ```
 
@@ -187,13 +187,18 @@ for device_id, name, device_type, location in devices_to_create:
 If you have an existing IoT device, you can integrate it by:
 
 1. Publishing MQTT messages to topic: `iot/{device_id}/telemetry`
-2. Using JSON payload format:
+2. Using v2 JSON payload format:
 ```json
 {
-  "timestamp": "2026-02-12T16:00:00.000Z",
+  "v": 2,
   "device_id": "your-device-id",
-  "temperature": 23.5,
-  "humidity": 65.0
+  "ts": "2026-02-12T16:00:00.000Z",
+  "seq": 1,
+  "msg_type": "telemetry",
+  "measurements": [
+    {"ts": "2026-02-12T16:00:00.000Z", "type": "voltage_dc", "val": 752.3, "unit": "V"},
+    {"ts": "2026-02-12T16:00:00.000Z", "type": "current_dc", "val": 312.7, "unit": "A"}
+  ]
 }
 ```
 
@@ -207,9 +212,14 @@ client = mqtt.Client()
 client.connect("localhost", 1883, 60)
 
 data = {
-    "timestamp": datetime.now().isoformat(),
+    "v": 2,
     "device_id": "my-device",
-    "temperature": 23.5
+    "ts": datetime.now().isoformat(),
+    "seq": 1,
+    "msg_type": "telemetry",
+    "measurements": [
+        {"ts": datetime.now().isoformat(), "type": "voltage_dc", "val": 752.3, "unit": "V"}
+    ]
 }
 
 client.publish("iot/my-device/telemetry", json.dumps(data))

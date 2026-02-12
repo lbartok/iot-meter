@@ -14,16 +14,22 @@
 - **Purpose**: Subscribes to MQTT topics and forwards data to storage
 - **Technology**: Python with paho-mqtt, minio, influxdb-client
 - **Responsibilities**:
-  - Listen to all device telemetry topics (`iot/+/telemetry`)
-  - Parse incoming messages
-  - Store raw data to MinIO
+  - Listen to all v2 device topics:
+    - `iot/+/telemetry` — Measurement datagrams
+    - `iot/+/hello` — Heartbeat / hello messages
+    - `iot/+/status` — Online/offline (LWT)
+    - `iot/+/command/ack` — Command acknowledgements
+    - `iot/+/ota/status` — OTA progress reports
+  - Parse incoming v2 messages (envelope with `v`, `seq`, `msg_type`)
+  - Store raw data to MinIO (partitioned by device and category)
   - Store time series data to InfluxDB
+  - Detect sequence gaps for deduplication
   - Handle connection failures and retries
 
 ### 3. MinIO (S3-Compatible Storage)
 - **Purpose**: Object storage for raw telemetry data archive
 - **Ports**: 9000 (API), 9090 (Console)
-- **Storage Structure**: `s3://iot-data/{device_id}/{timestamp}.json`
+- **Storage Structure**: `s3://iot-data/{device_id}/{category}/{timestamp}.json`
 - **Features**:
   - S3-compatible API
   - Scalable storage
@@ -47,9 +53,11 @@
 - **Purpose**: Device metadata and management data
 - **Port**: 5432
 - **Tables**:
-  - `devices`: Device registry and metadata
+  - `devices`: Device registry and metadata (with `connection_status`, `fw_version`)
   - `device_configs`: Configuration key-value pairs
   - `device_alerts`: Alert history
+  - `device_commands`: Server→device command queue (IoT.md §6)
+  - `device_seq_tracking`: Sequence deduplication (IoT.md §2.2)
 - **Features**:
   - ACID compliance
   - JSON support for flexible metadata
@@ -70,10 +78,10 @@
 - **Purpose**: Simulate multiple IoT devices for testing
 - **Technology**: Python with paho-mqtt
 - **Capabilities**:
-  - Simulate temperature sensors
-  - Simulate humidity sensors
-  - Simulate power meters
+  - Simulate DC traction power meters (`power_meter_dc`)
+  - Simulate AC traction power meters (`power_meter_ac`)
   - Configurable device count and publish interval
+  - v2 protocol with sequence numbers, heartbeats, and LWT
 
 ## Data Flow Diagram
 
@@ -88,7 +96,7 @@
 │ MQTT Broker     │
 │ (Mosquitto)     │
 └────────┬────────┘
-         │ Subscribe: iot/+/telemetry
+         │ Subscribe: iot/+/telemetry, iot/+/hello, ...
          ▼
 ┌─────────────────┐
 │ MQTT Collector  │
@@ -117,7 +125,7 @@
 ## Technology Stack
 
 ### Backend Services
-- **Python 3.11**: Primary programming language
+- **Python 3.13**: Primary programming language
 - **Flask**: REST API framework
 - **paho-mqtt**: MQTT client library
 - **psycopg2**: PostgreSQL adapter
@@ -126,7 +134,9 @@
 
 ### Infrastructure
 - **Docker**: Containerization
-- **Docker Compose**: Multi-container orchestration
+- **Docker Compose**: Local development orchestration
+- **Kubernetes (Kustomize)**: Production deployment (base + overlays)
+- **GitHub Actions**: CI/CD pipeline (build → test → deploy)
 - **Eclipse Mosquitto**: MQTT broker
 - **MinIO**: Object storage
 - **InfluxDB 2.7**: Time series database
@@ -180,16 +190,12 @@
 
 ## Deployment Options
 
-### Development
-- Docker Compose on local machine
-- All services on single host
-
-### Staging/Production
-- Kubernetes for orchestration
-- Managed services for databases
-- Load balancers for API and MQTT
-- Object storage (AWS S3, Azure Blob)
-- Monitoring and alerting platforms
+### Deployment
+- Docker Compose for local development
+- Kubernetes with Kustomize (base + production overlay) for staging/production
+- k3s single-node or multi-node cluster
+- CI/CD via GitHub Actions self-hosted runner
+- NPM (Nginx Proxy Manager) for HTTPS / Let's Encrypt
 
 ## Future Enhancements
 

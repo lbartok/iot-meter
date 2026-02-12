@@ -9,14 +9,14 @@ This implementation provides a complete, production-ready IoT device management 
 - **Implementation**: Python-based MQTT collector service
 - **Scalability**: Designed to run multiple instances with load balancing
 - **Features**:
-  - Subscribes to `iot/+/telemetry` topic pattern
+  - Subscribes to 5 v2 topic patterns (`iot/+/telemetry`, `iot/+/hello`, `iot/+/status`, `iot/+/command/ack`, `iot/+/ota/status`)
   - Handles all device types dynamically
   - Auto-reconnection and retry logic
-  - Non-blocking async processing
+  - Sequence gap detection and deduplication
 
 ### ✅ 2. Instant Save Everything to MinIO (S3)
 - **Implementation**: Raw data archival to MinIO
-- **Storage Structure**: `s3://iot-data/{device_id}/{timestamp}.json`
+- **Storage Structure**: `s3://iot-data/{device_id}/{category}/{timestamp}.json`
 - **Features**:
   - All MQTT messages saved instantly
   - JSON format with metadata
@@ -38,9 +38,11 @@ This implementation provides a complete, production-ready IoT device management 
 ### ✅ 4. IoT Devices Saved in Database
 - **Implementation**: PostgreSQL 15 database
 - **Schema**:
-  - `devices` table: Main device registry
+  - `devices` table: Main device registry (with `connection_status`, `fw_version`)
   - `device_configs` table: Configuration management
   - `device_alerts` table: Alert tracking
+  - `device_commands` table: Server→device command queue (IoT.md §6)
+  - `device_seq_tracking` table: Sequence deduplication (IoT.md §2.2)
 - **Features**:
   - JSON metadata support for flexibility
   - Indexed for fast lookups
@@ -95,19 +97,20 @@ This implementation provides a complete, production-ready IoT device management 
    - Integrates all data sources
 
 7. **IoT Device Simulator** (Python custom service)
-   - Simulates 3 devices by default
-   - Multiple sensor types
+   - Simulates 3 devices by default (2 DC, 1 AC power meters)
+   - Device types: `power_meter_dc`, `power_meter_ac`
+   - v2 protocol with sequence numbers and heartbeats
    - Configurable intervals
 
 ## Data Flow
 
 ```
 IoT Devices
-    ↓ (MQTT: iot/{device_id}/telemetry)
+    ↓ (MQTT: iot/{device_id}/telemetry, /hello, /status, ...)
 MQTT Broker (Mosquitto)
-    ↓ (Subscribe)
+    ↓ (Subscribe to 5 topic patterns)
 MQTT Collector
-    ├─→ MinIO (Raw Archive) 
+    ├─→ MinIO (Raw Archive, partitioned by device/category) 
     └─→ InfluxDB (Time Series)
 
 Device Manager API
@@ -219,21 +222,31 @@ iot-meter/
 │   ├── api_client.py               # Python API client
 │   ├── iot_device_client.py        # Device simulator
 │   └── README.md                   # Examples documentation
-├── docker-compose.yml               # Service orchestration
-├── Makefile                         # Helper commands
-├── .env.example                     # Environment template
-├── README.md                        # Main documentation
-├── QUICKSTART.md                    # Quick start guide
-└── ARCHITECTURE.md                  # Architecture details
+├── k8s/                        # Kubernetes manifests (Kustomize)
+│   ├── base/                   # Base manifests (local development)
+│   └── overlays/production/    # Production overlay (k3s)
+├── tests/                       # Automated test suite (126+ tests)
+│   ├── unit/                   # Unit tests
+│   ├── integration/            # Integration tests
+│   └── e2e/                    # End-to-end tests
+├── .github/workflows/          # CI/CD pipeline (GitHub Actions)
+│   └── deploy.yml
+├── docker-compose.yml           # Local development orchestration
+├── Makefile                     # Build / deploy / test targets
+├── PRODUCTION.md                # Production deployment runbook
+├── IoT.md                       # IoT payload specification (v2)
+├── assessment.md                # Improvement assessment
+└── README.md                    # Main documentation
 ```
 
 ## Lines of Code
 
 - **Configuration**: ~200 lines (SQL, YAML, conf)
-- **Python Services**: ~800 lines (collector, API, simulator)
-- **Examples**: ~400 lines (clients, tests)
-- **Documentation**: ~1,500 lines (README, guides)
-- **Total**: ~2,900 lines of production code and documentation
+- **Python Services**: ~1,600 lines (collector 407, API 724, simulator 486)
+- **Tests**: ~2,000+ lines (126 unit+integration tests)
+- **Documentation**: ~2,500 lines (README, guides, IoT.md, runbook)
+- **K8s Manifests**: ~400 lines (base + production overlay)
+- **Total**: ~6,700+ lines of production code, tests, and documentation
 
 ## Next Steps (Optional Enhancements)
 
@@ -249,15 +262,16 @@ iot-meter/
    - Grafana integration for visualization
 
 3. **Production Hardening**
-   - Kubernetes deployment manifests
-   - CI/CD pipeline setup
-   - Monitoring and observability stack
-   - Backup and disaster recovery
+   - ~~Kubernetes deployment manifests~~ ✅ Done (Kustomize base + production overlay)
+   - ~~CI/CD pipeline setup~~ ✅ Done (GitHub Actions: build → test → deploy)
+   - Monitoring and observability stack (Prometheus, Grafana)
+   - ~~Backup and disaster recovery~~ ✅ Documented in PRODUCTION.md
 
-4. **Edge Computing**
-   - Edge data processing
-   - Local data buffering
-   - Offline operation support
+4. **Scalability**
+   - Horizontal auto-scaling (HPA)
+   - MQTT broker clustering
+   - Database connection pooling
+   - InfluxDB retention policies
 
 ## Conclusion
 

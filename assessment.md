@@ -1,14 +1,14 @@
 # Assessment — Improvement Options
 
-> **Version:** 1.0  
-> **Scope:** IoT Meter platform  
+> **Version:** 2.0  
+> **Scope:** IoT Meter platform (v2 — rail mobility DC/AC power metering)  
 > **Last Updated:** 2025-07
 
 ---
 
 ## 1. Current State Summary
 
-The v1 platform delivers the three core requirements:
+The v2 platform delivers the core requirements with rail mobility focus:
 
 | # | Requirement | Current Implementation |
 |---|------------|------------------------|
@@ -148,15 +148,13 @@ The sections below assess concrete improvements, each with **pros, cons, effort 
 
 ## 6. DevOps & CI/CD
 
-### 6.1 CI Pipeline (GitHub Actions)
+### 6.1 CI Pipeline (GitHub Actions) — ✅ Implemented
 
 | Aspect | Detail |
 |--------|--------|
-| **What** | Automated lint → unit test → build → push to registry → deploy to staging on every push to `main`. |
-| **Pros** | Catch regressions early. Repeatable deployments. |
-| **Cons** | Pipeline maintenance. Registry costs. |
-| **Effort** | Medium — `.github/workflows/ci.yml`. |
-| **Priority** | 🔴 **High** |
+| **What** | 3-stage pipeline: Build → Test → Deploy on every push to `main`. Self-hosted runner on k3s. |
+| **Status** | ✅ **Done** — `.github/workflows/deploy.yml` with unit+integration tests gating deployment. |
+| **Priority** | ✅ **Complete** |
 
 ### 6.2 Helm Chart
 
@@ -184,7 +182,7 @@ The sections below assess concrete improvements, each with **pros, cons, effort 
 
 | Phase | Items | Estimated Timeline |
 |-------|-------|--------------------|
-| **Phase 1 — Secure & Ship** | TLS (2.1), API Auth (2.2), CI pipeline (6.1) | 2–3 weeks |
+| **Phase 1 — Secure & Ship** | TLS (2.1), API Auth (2.2), ~~CI pipeline (6.1)~~ ✅ | 2–3 weeks |
 | **Phase 2 — Observe & Validate** | Prometheus (3.3), Structured logs (3.2), Schema validation (5.1), Topic ACLs (2.3) | 2–3 weeks |
 | **Phase 3 — Scale** | HPA (4.1), DB retention (4.3), Helm chart (6.2), Message queue (3.1) | 3–4 weeks |
 | **Phase 4 — Optimize** | CBOR payloads (5.2), Broker clustering (4.2), GitOps (6.3) | As needed |
@@ -243,6 +241,6 @@ The IoT Meter platform has a solid v1 foundation. The highest-impact next steps 
 
 1. **Enable TLS and device authentication** — without this, no production deployment is viable.
 2. **Add API authentication** — protect device management operations.
-3. **Set up CI/CD** — automate testing and deployment to prevent regressions.
+3. ~~**Set up CI/CD**~~ ✅ **Done** — GitHub Actions 3-stage pipeline with self-hosted runner.
 
 All other improvements can be phased in based on scale requirements and team capacity.
