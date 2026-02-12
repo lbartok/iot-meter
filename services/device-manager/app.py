@@ -3,10 +3,13 @@ from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
+import json
+import uuid
 import logging
 from datetime import datetime
 from influxdb_client import InfluxDBClient
 from minio import Minio
+import paho.mqtt.client as mqtt
 
 # Configure logging
 logging.basicConfig(
@@ -39,6 +42,13 @@ MINIO_ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', 'minioadmin')
 MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'minioadmin123')
 MINIO_BUCKET = os.getenv('MINIO_BUCKET', 'iot-data')
 
+# MQTT broker configuration (for publishing commands to devices — IoT.md §6)
+MQTT_BROKER = os.getenv('MQTT_BROKER', 'localhost')
+MQTT_PORT = int(os.getenv('MQTT_PORT', 1883))
+
+# Supported command types — IoT.md §6.2
+VALID_COMMANDS = {'update_config', 'start_ota', 'reboot', 'factory_reset', 'request_status'}
+
 def get_db_connection():
     """Create database connection"""
     return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
@@ -50,6 +60,13 @@ def get_influx_client():
 def get_minio_client():
     """Create MinIO client"""
     return Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+
+
+def get_mqtt_client():
+    """Create and connect a temporary MQTT client for publishing commands."""
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"device-manager-{uuid.uuid4().hex[:8]}")
+    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    return client
 
 # Device Management Endpoints
 
@@ -470,6 +487,238 @@ def get_stats():
     except Exception as e:
         logger.error(f"Error fetching stats: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+# ===================================================================
+# Device Status — IoT.md §5 (Online / Offline Detection)
+# ===================================================================
+
+@app.route('/api/devices/<device_id>/status', methods=['GET'])
+def get_device_status(device_id):
+    """Get a device's connection status (online/offline).
+
+    See IoT.md §5 — REQ-ONLINE-001.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT device_id, connection_status, last_seen, fw_version FROM devices WHERE device_id = %s",
+            (device_id,)
+        )
+        device = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not device:
+            return jsonify({'error': 'Device not found'}), 404
+
+        return jsonify(device), 200
+    except Exception as e:
+        logger.error(f"Error fetching device status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/devices/<device_id>/status', methods=['PUT'])
+def update_device_status(device_id):
+    """Update a device's connection status (called by collector on status messages).
+
+    Expected body: {"connection_status": "online"|"offline", "fw_version": "..."}
+    See IoT.md §5.
+    """
+    try:
+        data = request.json
+        connection_status = data.get('connection_status')
+        if connection_status not in ('online', 'offline', 'unknown'):
+            return jsonify({'error': 'Invalid connection_status. Must be online, offline, or unknown.'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        update_fields = ["connection_status = %s", "last_seen = CURRENT_TIMESTAMP", "updated_at = CURRENT_TIMESTAMP"]
+        params = [connection_status]
+
+        if 'fw_version' in data:
+            update_fields.append("fw_version = %s")
+            params.append(data['fw_version'])
+
+        params.append(device_id)
+        query = f"UPDATE devices SET {', '.join(update_fields)} WHERE device_id = %s RETURNING *"
+
+        cursor.execute(query, params)
+        device = cursor.fetchone()
+
+        if not device:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Device not found'}), 404
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify(device), 200
+    except Exception as e:
+        logger.error(f"Error updating device status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ===================================================================
+# Commands — IoT.md §6 (Server → Device Commands)
+# ===================================================================
+
+@app.route('/api/devices/<device_id>/commands', methods=['POST'])
+def send_command(device_id):
+    """Send a command to a device via MQTT.
+
+    Request body: {"cmd": "update_config", "params": {...}}
+    See IoT.md §6.1–6.4.
+    """
+    try:
+        data = request.json
+        cmd = data.get('cmd')
+        params = data.get('params', {})
+
+        if not cmd:
+            return jsonify({'error': 'Missing required field: cmd'}), 400
+
+        if cmd not in VALID_COMMANDS:
+            return jsonify({
+                'error': f'Invalid command: {cmd}. Valid commands: {sorted(VALID_COMMANDS)}'
+            }), 400
+
+        cmd_id = str(uuid.uuid4())
+        ts = datetime.utcnow().isoformat() + 'Z'
+
+        # Build command payload (IoT.md §6.1)
+        command_payload = {
+            'v': 2,
+            'cmd_id': cmd_id,
+            'ts': ts,
+            'cmd': cmd,
+            'params': params
+        }
+
+        # Persist command in DB for tracking
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """INSERT INTO device_commands (cmd_id, device_id, cmd, params, status)
+               VALUES (%s, %s, %s, %s, 'pending') RETURNING *""",
+            (cmd_id, device_id, cmd, json.dumps(params))
+        )
+        command_record = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Publish command to MQTT (IoT.md §3.1)
+        topic = f"iot/{device_id}/command"
+        try:
+            mqtt_client = get_mqtt_client()
+            result = mqtt_client.publish(topic, json.dumps(command_payload), qos=2)
+            mqtt_client.disconnect()
+            logger.info(f"Published command {cmd_id} to {topic}: {cmd}")
+        except Exception as mqtt_err:
+            logger.error(f"Failed to publish command to MQTT: {mqtt_err}")
+            # Command is still persisted in DB with 'pending' status
+            return jsonify({
+                'cmd_id': cmd_id,
+                'status': 'pending',
+                'mqtt_error': str(mqtt_err),
+                'message': 'Command saved but MQTT publish failed'
+            }), 202
+
+        return jsonify({
+            'cmd_id': cmd_id,
+            'device_id': device_id,
+            'cmd': cmd,
+            'status': 'pending',
+            'message': f'Command published to {topic}'
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Error sending command: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/devices/<device_id>/commands', methods=['GET'])
+def get_device_commands(device_id):
+    """Get command history for a device.
+
+    Optional query params: ?status=pending|accepted|rejected
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        query = "SELECT * FROM device_commands WHERE device_id = %s"
+        params = [device_id]
+
+        status_filter = request.args.get('status')
+        if status_filter:
+            query += " AND status = %s"
+            params.append(status_filter)
+
+        query += " ORDER BY created_at DESC"
+
+        cursor.execute(query, params)
+        commands = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify(commands), 200
+    except Exception as e:
+        logger.error(f"Error fetching commands: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/commands/<cmd_id>/ack', methods=['PUT'])
+def acknowledge_command(cmd_id):
+    """Update a command's status after receiving an ack from the device.
+
+    Called by the collector when it receives a command/ack message.
+    Body: {"result": "accepted", "detail": "..."}
+    See IoT.md §6.5.
+    """
+    try:
+        data = request.json
+        result = data.get('result')
+        detail = data.get('detail', '')
+
+        valid_results = {'accepted', 'rejected', 'error', 'unsupported'}
+        if result not in valid_results:
+            return jsonify({'error': f'Invalid result. Must be one of: {sorted(valid_results)}'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """UPDATE device_commands 
+               SET status = %s, ack_detail = %s, acked_at = CURRENT_TIMESTAMP
+               WHERE cmd_id = %s RETURNING *""",
+            (result, detail, cmd_id)
+        )
+        command = cursor.fetchone()
+
+        if not command:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Command not found'}), 404
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify(command), 200
+    except Exception as e:
+        logger.error(f"Error acknowledging command: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)

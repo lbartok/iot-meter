@@ -1,4 +1,5 @@
 -- Device metadata table
+-- See IoT.md §11 — devices must be registered before first use.
 CREATE TABLE IF NOT EXISTS devices (
     id SERIAL PRIMARY KEY,
     device_id VARCHAR(255) UNIQUE NOT NULL,
@@ -6,9 +7,11 @@ CREATE TABLE IF NOT EXISTS devices (
     device_type VARCHAR(100),
     location VARCHAR(255),
     status VARCHAR(50) DEFAULT 'active',
+    connection_status VARCHAR(20) DEFAULT 'unknown',  -- online / offline / unknown (IoT.md §5)
+    last_seen TIMESTAMP,
+    fw_version VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_seen TIMESTAMP,
     metadata JSONB
 );
 
@@ -16,6 +19,7 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE INDEX IF NOT EXISTS idx_device_id ON devices(device_id);
 CREATE INDEX IF NOT EXISTS idx_status ON devices(status);
 CREATE INDEX IF NOT EXISTS idx_last_seen ON devices(last_seen);
+CREATE INDEX IF NOT EXISTS idx_connection_status ON devices(connection_status);
 
 -- Device configuration table
 CREATE TABLE IF NOT EXISTS device_configs (
@@ -44,10 +48,39 @@ CREATE TABLE IF NOT EXISTS device_alerts (
 CREATE INDEX IF NOT EXISTS idx_device_alerts_device ON device_alerts(device_id);
 CREATE INDEX IF NOT EXISTS idx_device_alerts_acknowledged ON device_alerts(acknowledged);
 
--- Insert some sample devices
+-- Device commands table — tracks server→device commands (IoT.md §6)
+CREATE TABLE IF NOT EXISTS device_commands (
+    id SERIAL PRIMARY KEY,
+    cmd_id UUID UNIQUE NOT NULL,
+    device_id VARCHAR(255) NOT NULL,
+    cmd VARCHAR(100) NOT NULL,
+    params JSONB DEFAULT '{}',
+    status VARCHAR(50) DEFAULT 'pending',   -- pending / accepted / rejected / error / unsupported / timeout
+    ack_detail TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    acked_at TIMESTAMP,
+    FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_commands_device ON device_commands(device_id);
+CREATE INDEX IF NOT EXISTS idx_device_commands_status ON device_commands(status);
+
+-- Sequence tracking for deduplication (IoT.md §2.2, REQ-DEDUP-001)
+CREATE TABLE IF NOT EXISTS device_seq_tracking (
+    device_id VARCHAR(255) PRIMARY KEY,
+    last_seq BIGINT DEFAULT -1,
+    gap_count INTEGER DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
+);
+
+-- Insert sample rail mobility devices
 INSERT INTO devices (device_id, device_name, device_type, location, metadata) 
 VALUES 
-    ('device-001', 'Temperature Sensor 1', 'temperature', 'Building A - Room 101', '{"sampling_rate": "5s", "unit": "celsius"}'),
-    ('device-002', 'Temperature Sensor 2', 'temperature', 'Building A - Room 102', '{"sampling_rate": "5s", "unit": "celsius"}'),
-    ('device-003', 'Humidity Sensor 1', 'humidity', 'Building B - Room 201', '{"sampling_rate": "10s", "unit": "percentage"}')
+    ('dc-meter-001', 'DC Traction Meter — Train 4521, Car 1', 'power_meter_dc', 'Train 4521 / Car 1 / Main DC Bus',
+     '{"voltage_system": "DC 750V", "voltage_range": "0-1000V", "current_range": "0-2000A", "accuracy_class": "0.5R", "sampling_cadence_ms": 1000, "send_interval_s": 10, "hello_interval_s": 30, "brokers": [{"host": "localhost", "port": 1883}]}'),
+    ('dc-meter-002', 'DC Traction Meter — Train 4521, Car 3', 'power_meter_dc', 'Train 4521 / Car 3 / Main DC Bus',
+     '{"voltage_system": "DC 750V", "voltage_range": "0-1000V", "current_range": "0-2000A", "accuracy_class": "0.5R", "sampling_cadence_ms": 1000, "send_interval_s": 10, "hello_interval_s": 30, "brokers": [{"host": "localhost", "port": 1883}]}'),
+    ('ac-meter-001', 'AC Traction Meter — Train 8010, Car 1', 'power_meter_ac', 'Train 8010 / Car 1 / Pantograph',
+     '{"voltage_system": "AC 25kV 50Hz", "voltage_range": "0-30000V", "current_range": "0-2000A", "accuracy_class": "0.5R", "sampling_cadence_ms": 1000, "send_interval_s": 10, "hello_interval_s": 30, "brokers": [{"host": "localhost", "port": 1883}]}')
 ON CONFLICT (device_id) DO NOTHING;

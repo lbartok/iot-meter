@@ -1,7 +1,14 @@
 """
 Unit tests for the device-manager Flask API.
 
-All external dependencies (PostgreSQL, InfluxDB, MinIO) are mocked.
+All external dependencies (PostgreSQL, InfluxDB, MinIO, MQTT) are mocked.
+
+These tests verify the v2 protocol features defined in IoT.md:
+  - §5  Device online/offline status endpoints
+  - §6  Server → device command publishing
+  - §6.5 Command acknowledgement tracking
+
+Any change to IoT.md MUST be reflected here and vice-versa.
 """
 import json
 import pytest
@@ -459,3 +466,283 @@ class TestStats:
         assert data['total_devices'] == 6
         assert data['unacknowledged_alerts'] == 3
         assert len(data['device_by_status']) == 2
+
+
+# ===================================================================
+# GET/PUT /api/devices/<device_id>/status — IoT.md §5
+# ===================================================================
+
+class TestDeviceStatus:
+    """Tests for device connection status endpoints.
+
+    Implements REQ-ONLINE-001: backend tracks online/offline state.
+    See IoT.md §5.
+    """
+
+    @patch('app.get_db_connection')
+    def test_get_device_status(self, mock_conn, dm_client):
+        """GET /api/devices/<id>/status returns connection status."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            'device_id': 'dc-meter-007',
+            'connection_status': 'online',
+            'last_seen': '2026-02-12T10:00:00',
+            'fw_version': '2.1.0',
+        }
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.get('/api/devices/dc-meter-007/status')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['connection_status'] == 'online'
+        assert data['fw_version'] == '2.1.0'
+
+    @patch('app.get_db_connection')
+    def test_get_device_status_not_found(self, mock_conn, dm_client):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = None
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.get('/api/devices/nonexistent/status')
+        assert resp.status_code == 404
+
+    @patch('app.get_db_connection')
+    def test_update_device_status_online(self, mock_conn, dm_client):
+        """PUT /api/devices/<id>/status sets connection_status."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            'device_id': 'dc-meter-007',
+            'connection_status': 'online',
+        }
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.put(
+            '/api/devices/dc-meter-007/status',
+            data=json.dumps({'connection_status': 'online', 'fw_version': '2.1.0'}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 200
+
+    @patch('app.get_db_connection')
+    def test_update_device_status_invalid(self, mock_conn, dm_client):
+        """Invalid connection_status must be rejected."""
+        resp = dm_client.put(
+            '/api/devices/dc-meter-007/status',
+            data=json.dumps({'connection_status': 'banana'}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 400
+
+    @patch('app.get_db_connection')
+    def test_update_device_status_not_found(self, mock_conn, dm_client):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = None
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.put(
+            '/api/devices/nonexistent/status',
+            data=json.dumps({'connection_status': 'offline'}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 404
+
+
+# ===================================================================
+# POST /api/devices/<device_id>/commands — IoT.md §6
+# ===================================================================
+
+class TestSendCommand:
+    """Tests for server → device command publishing.
+
+    See IoT.md §6.1–6.4 for command envelope format.
+    """
+
+    @patch('app.get_mqtt_client')
+    @patch('app.get_db_connection')
+    def test_send_update_config_command(self, mock_conn, mock_mqtt, dm_client):
+        """POST /api/devices/<id>/commands publishes to MQTT and persists in DB."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            'cmd_id': 'test-uuid', 'device_id': 'dc-meter-007',
+            'cmd': 'update_config', 'status': 'pending'
+        }
+        mock_conn.return_value.cursor.return_value = mock_cursor
+        mock_mqtt_client = MagicMock()
+        mock_mqtt_client.publish.return_value = MagicMock(rc=0)
+        mock_mqtt.return_value = mock_mqtt_client
+
+        resp = dm_client.post(
+            '/api/devices/dc-meter-007/commands',
+            data=json.dumps({'cmd': 'update_config', 'params': {'send_interval_s': 5}}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data['cmd'] == 'update_config'
+        assert data['status'] == 'pending'
+        # Verify MQTT publish was called with correct topic
+        mock_mqtt_client.publish.assert_called_once()
+        call_args = mock_mqtt_client.publish.call_args
+        assert 'iot/dc-meter-007/command' in call_args[0]
+
+    @patch('app.get_db_connection')
+    def test_send_command_missing_cmd(self, mock_conn, dm_client):
+        """Missing 'cmd' field must return 400."""
+        resp = dm_client.post(
+            '/api/devices/dc-meter-007/commands',
+            data=json.dumps({'params': {}}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 400
+        assert 'cmd' in resp.get_json()['error']
+
+    @patch('app.get_db_connection')
+    def test_send_command_invalid_type(self, mock_conn, dm_client):
+        """Invalid command type must return 400 — IoT.md §6.2."""
+        resp = dm_client.post(
+            '/api/devices/dc-meter-007/commands',
+            data=json.dumps({'cmd': 'self_destruct', 'params': {}}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 400
+        assert 'Invalid command' in resp.get_json()['error']
+
+    @patch('app.get_mqtt_client')
+    @patch('app.get_db_connection')
+    def test_send_command_mqtt_failure(self, mock_conn, mock_mqtt, dm_client):
+        """MQTT publish failure still saves command in DB — returns 202."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            'cmd_id': 'test-uuid', 'device_id': 'dc-meter-007',
+            'cmd': 'reboot', 'status': 'pending'
+        }
+        mock_conn.return_value.cursor.return_value = mock_cursor
+        mock_mqtt.side_effect = Exception("Broker unreachable")
+
+        resp = dm_client.post(
+            '/api/devices/dc-meter-007/commands',
+            data=json.dumps({'cmd': 'reboot', 'params': {}}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 202
+        assert 'mqtt_error' in resp.get_json()
+
+    @patch('app.get_mqtt_client')
+    @patch('app.get_db_connection')
+    def test_send_start_ota_command(self, mock_conn, mock_mqtt, dm_client):
+        """start_ota command is valid — IoT.md §6.4."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            'cmd_id': 'ota-uuid', 'device_id': 'dc-meter-007',
+            'cmd': 'start_ota', 'status': 'pending'
+        }
+        mock_conn.return_value.cursor.return_value = mock_cursor
+        mock_mqtt.return_value = MagicMock()
+        mock_mqtt.return_value.publish.return_value = MagicMock(rc=0)
+
+        resp = dm_client.post(
+            '/api/devices/dc-meter-007/commands',
+            data=json.dumps({
+                'cmd': 'start_ota',
+                'params': {'fw_version': '2.2.0', 'fw_url': 'https://ota.example.com/2.2.0.bin'}
+            }),
+            content_type='application/json',
+        )
+        assert resp.status_code == 201
+
+
+# ===================================================================
+# GET /api/devices/<device_id>/commands
+# ===================================================================
+
+class TestGetDeviceCommands:
+    """Tests for command history retrieval."""
+
+    @patch('app.get_db_connection')
+    def test_get_commands(self, mock_conn, dm_client):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [
+            {'cmd_id': 'c1', 'cmd': 'update_config', 'status': 'accepted'},
+            {'cmd_id': 'c2', 'cmd': 'reboot', 'status': 'pending'},
+        ]
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.get('/api/devices/dc-meter-007/commands')
+        assert resp.status_code == 200
+        assert len(resp.get_json()) == 2
+
+    @patch('app.get_db_connection')
+    def test_get_commands_filter_status(self, mock_conn, dm_client):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [
+            {'cmd_id': 'c2', 'cmd': 'reboot', 'status': 'pending'},
+        ]
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.get('/api/devices/dc-meter-007/commands?status=pending')
+        assert resp.status_code == 200
+        call_args = mock_cursor.execute.call_args
+        assert 'AND status = %s' in call_args[0][0]
+
+
+# ===================================================================
+# PUT /api/commands/<cmd_id>/ack — IoT.md §6.5
+# ===================================================================
+
+class TestAcknowledgeCommand:
+    """Tests for command acknowledgement.
+
+    See IoT.md §6.5. Result must be one of:
+    accepted, rejected, error, unsupported.
+    """
+
+    @patch('app.get_db_connection')
+    def test_ack_accepted(self, mock_conn, dm_client):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            'cmd_id': 'c1', 'status': 'accepted', 'ack_detail': 'Config updated'
+        }
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.put(
+            '/api/commands/c1/ack',
+            data=json.dumps({'result': 'accepted', 'detail': 'Config updated'}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 200
+
+    @patch('app.get_db_connection')
+    def test_ack_rejected(self, mock_conn, dm_client):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {'cmd_id': 'c1', 'status': 'rejected'}
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.put(
+            '/api/commands/c1/ack',
+            data=json.dumps({'result': 'rejected', 'detail': 'Invalid param'}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 200
+
+    @patch('app.get_db_connection')
+    def test_ack_invalid_result(self, mock_conn, dm_client):
+        """Invalid result value must be rejected."""
+        resp = dm_client.put(
+            '/api/commands/c1/ack',
+            data=json.dumps({'result': 'maybe'}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 400
+
+    @patch('app.get_db_connection')
+    def test_ack_command_not_found(self, mock_conn, dm_client):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = None
+        mock_conn.return_value.cursor.return_value = mock_cursor
+
+        resp = dm_client.put(
+            '/api/commands/nonexistent/ack',
+            data=json.dumps({'result': 'accepted'}),
+            content_type='application/json',
+        )
+        assert resp.status_code == 404
