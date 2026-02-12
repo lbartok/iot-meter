@@ -104,22 +104,29 @@ class MQTTCollector:
         return self.mqtt_connected and self.minio_ready and self.influxdb_ready
 
     def init_minio(self):
-        """Initialize MinIO client"""
-        try:
-            self.minio_client = Minio(
-                self.minio_endpoint,
-                access_key=self.minio_access_key,
-                secret_key=self.minio_secret_key,
-                secure=False
-            )
-            # Check if bucket exists
-            if not self.minio_client.bucket_exists(self.minio_bucket):
-                logger.warning(f"Bucket {self.minio_bucket} does not exist, waiting for creation...")
-            self.minio_ready = True
-            logger.info("MinIO client initialized successfully")
-        except Exception as e:
-            self.minio_ready = False
-            logger.error(f"Failed to initialize MinIO client: {e}")
+        """Initialize MinIO client with retry logic"""
+        max_retries = 15
+        retry_delay = 5
+        for attempt in range(max_retries):
+            try:
+                self.minio_client = Minio(
+                    self.minio_endpoint,
+                    access_key=self.minio_access_key,
+                    secret_key=self.minio_secret_key,
+                    secure=False
+                )
+                # Check if bucket exists (this actually contacts MinIO)
+                if not self.minio_client.bucket_exists(self.minio_bucket):
+                    logger.warning(f"Bucket {self.minio_bucket} does not exist, waiting for creation...")
+                self.minio_ready = True
+                logger.info("MinIO client initialized successfully")
+                return
+            except Exception as e:
+                logger.warning(f"MinIO init attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+        self.minio_ready = False
+        logger.error("Failed to initialize MinIO client after all retries")
 
     def init_influxdb(self):
         """Initialize InfluxDB client"""

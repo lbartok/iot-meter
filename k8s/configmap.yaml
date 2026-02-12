@@ -25,6 +25,9 @@ data:
   MINIO_ENDPOINT: "minio:9000"
   MINIO_BUCKET: "iot-data"
 
+  # Device Manager
+  DEVICE_MANAGER_URL: "http://device-manager:8080"
+
   # Simulator
   DEVICE_COUNT: "3"
   PUBLISH_INTERVAL: "5"
