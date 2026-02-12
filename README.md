@@ -317,6 +317,147 @@ docker-compose restart mqtt-collector
 6. Add rate limiting to the API
 7. Implement message queue for high-volume scenarios
 
+## Kubernetes Deployment
+
+The project includes full Kubernetes manifests managed with [Kustomize](https://kustomize.io/).
+
+### Prerequisites
+
+- A running Kubernetes cluster (e.g. Docker Desktop, minikube, kind, or a cloud cluster)
+- `kubectl` configured to talk to the cluster
+- Docker available for building images
+
+### Build Images
+
+```bash
+make k8s-build
+```
+
+This builds three images locally:
+
+| Image | Source |
+|-------|--------|
+| `iot-meter/device-manager:latest` | `services/device-manager/` |
+| `iot-meter/mqtt-collector:latest` | `services/mqtt-collector/` |
+| `iot-meter/iot-device-simulator:latest` | `services/iot-device-simulator/` |
+
+> **Tip:** If you use minikube, run `eval $(minikube docker-env)` before building so the images are available inside the VM.
+
+### Deploy to Kubernetes
+
+```bash
+make k8s-deploy          # kubectl apply -k k8s/
+```
+
+All resources are created in the `iot-meter` namespace.
+
+### Check Status
+
+```bash
+make k8s-status          # pods + services overview
+kubectl get all -n iot-meter   # full resource listing
+```
+
+### Access the API (port-forward)
+
+```bash
+make k8s-port-forward    # forwards svc/device-manager → localhost:8080
+```
+
+Then use the API exactly as described in the [API Documentation](#api-documentation) section.
+
+### View Logs
+
+```bash
+make k8s-logs-manager    # Device Manager logs
+make k8s-logs-collector  # MQTT Collector logs
+make k8s-logs-simulator  # IoT Simulator logs
+```
+
+### Tear Down
+
+```bash
+make k8s-delete          # kubectl delete -k k8s/
+```
+
+### One-liner: Build, Deploy & Smoke-test
+
+```bash
+./start.sh               # builds, deploys, waits for readiness, runs tests
+```
+
+> See [start.sh](start.sh) for the full bootstrap script.
+
+---
+
+## Testing
+
+The project ships with a comprehensive test suite built on **pytest 8.3**.
+
+### Test Categories
+
+| Marker | What it covers | Infrastructure needed |
+|--------|---------------|----------------------|
+| `unit` | Individual functions & endpoints with mocks | None |
+| `integration` | Cross-component interactions (mocked backends) | None |
+| `e2e` | Full stack through MQTT & REST | Running cluster or Docker Compose |
+
+### Install Test Dependencies
+
+```bash
+pip install -r requirements-test.txt
+```
+
+### Run Tests
+
+```bash
+# Unit tests only (fast, no infrastructure)
+make test-unit
+
+# Integration tests
+make test-integration
+
+# End-to-end tests (requires running services)
+make test-e2e
+
+# All tests at once
+make test-all
+
+# CI mode — unit + integration with coverage report
+make test-ci
+```
+
+### Direct pytest Usage
+
+```bash
+# Run a specific test file
+python -m pytest tests/unit/test_device_manager.py -v
+
+# Run tests matching a keyword
+python -m pytest tests/ -k "heartbeat" -v
+
+# Run with coverage HTML report
+python -m pytest tests/unit tests/integration --cov=services --cov-report=html
+```
+
+### Test Results
+
+The latest test run produced the following results (68 tests):
+
+```
+tests/unit/test_device_manager.py    — 34 passed
+tests/unit/test_mqtt_collector.py    — 15 passed
+tests/unit/test_simulator.py         — 11 passed
+tests/integration/test_integration.py —  6 passed
+tests/e2e/test_e2e.py               — 12 tests (require running infrastructure)
+
+Total: 66 passed (unit + integration), 2 skipped (e2e infra-dependent)
+```
+
+> E2E tests are skipped automatically when the target services are not reachable.
+
+---
+
 ## Development
 
 ### Project Structure
@@ -339,7 +480,22 @@ iot-meter/
 │       ├── simulator.py
 │       ├── requirements.txt
 │       └── Dockerfile
-├── docker-compose.yml          # Service orchestration
+├── k8s/                        # Kubernetes manifests (Kustomize)
+│   ├── kustomization.yaml
+│   ├── namespace.yaml
+│   ├── configmap.yaml
+│   ├── secrets.yaml
+│   └── *.yaml                  # Per-service deployments & services
+├── tests/                      # Automated test suite
+│   ├── conftest.py             # Shared fixtures
+│   ├── unit/                   # Unit tests
+│   ├── integration/            # Integration tests
+│   └── e2e/                    # End-to-end tests
+├── docker-compose.yml          # Local development orchestration
+├── start.sh                    # K8s bootstrap & test runner
+├── IoT.md                      # IoT payload specification
+├── assessment.md               # Improvement assessment
+├── Makefile                    # Build / deploy / test targets
 └── README.md                   # This file
 ```
 
