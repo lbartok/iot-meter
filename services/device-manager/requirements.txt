@@ -1,5 +1,5 @@
 Flask==3.0.0
-Flask-CORS==4.0.0
+Flask-CORS==6.0.0
 psycopg2-binary==2.9.9
 influxdb-client==1.38.0
 minio==7.2.0
