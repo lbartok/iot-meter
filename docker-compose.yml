@@ -12,6 +12,13 @@ services:
       - mosquitto-logs:/mosquitto/log
     networks:
       - iot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -W 3 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # MinIO (S3-compatible storage)
   minio:
@@ -28,6 +35,7 @@ services:
       - minio-data:/data
     networks:
       - iot-network
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -68,6 +76,13 @@ services:
       - influxdb-data:/var/lib/influxdb2
     networks:
       - iot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # PostgreSQL (Device metadata database)
   postgres:
@@ -84,11 +99,13 @@ services:
       - ./config/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     networks:
       - iot-network
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U iot_user -d iot_devices"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   # MQTT Collector Service
   mqtt-collector:
@@ -98,11 +115,11 @@ services:
     container_name: iot-mqtt-collector
     depends_on:
       mosquitto:
-        condition: service_started
+        condition: service_healthy
       minio:
         condition: service_healthy
       influxdb:
-        condition: service_started
+        condition: service_healthy
     environment:
       MQTT_BROKER: mosquitto
       MQTT_PORT: 1883
@@ -129,7 +146,14 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
@@ -157,7 +181,8 @@ services:
       dockerfile: Dockerfile
     container_name: iot-device-simulator
     depends_on:
-      - mosquitto
+      mosquitto:
+        condition: service_healthy
     environment:
       MQTT_BROKER: mosquitto
       MQTT_PORT: 1883

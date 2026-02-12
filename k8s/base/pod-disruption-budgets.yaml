@@ -1,0 +1,93 @@
+---
+# PodDisruptionBudgets — ensure minimum availability during voluntary
+# disruptions (node drain, rolling upgrades, cluster maintenance).
+#
+# device-manager (2+ replicas): at least 1 must always be available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: device-manager-pdb
+  namespace: iot-meter
+  labels:
+    app: device-manager
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: device-manager
+---
+# mqtt-collector (2 replicas): at least 1 must always be available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mqtt-collector-pdb
+  namespace: iot-meter
+  labels:
+    app: mqtt-collector
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mqtt-collector
+---
+# mosquitto (1 replica): cannot be voluntarily evicted (0 disruption)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mosquitto-pdb
+  namespace: iot-meter
+  labels:
+    app: mosquitto
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mosquitto
+---
+# postgres (1 replica): cannot be voluntarily evicted
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: iot-meter
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: postgres
+---
+# influxdb (1 replica): cannot be voluntarily evicted
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: influxdb-pdb
+  namespace: iot-meter
+  labels:
+    app: influxdb
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: influxdb
+---
+# minio (1 replica): cannot be voluntarily evicted
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: minio-pdb
+  namespace: iot-meter
+  labels:
+    app: minio
+    app.kubernetes.io/part-of: iot-meter
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: minio

@@ -15,3 +15,4 @@ resources:
   - device-manager.yaml
   - mqtt-collector.yaml
   - iot-simulator.yaml
+  - pod-disruption-budgets.yaml
