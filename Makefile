@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward
+.PHONY: help build up down logs clean restart status test k8s-build k8s-deploy k8s-delete k8s-status k8s-logs-collector k8s-logs-manager k8s-logs-simulator k8s-port-forward test-unit test-integration test-e2e test-all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -131,3 +131,20 @@ k8s-logs-simulator: ## Show logs from IoT simulator pod
 
 k8s-port-forward: ## Port-forward Device Manager API to localhost:8080
 	kubectl port-forward svc/device-manager 8080:8080 -n $(K8S_NAMESPACE)
+
+# ==================== Test Targets ====================
+
+test-unit: ## Run unit tests (no infrastructure required)
+	python -m pytest tests/unit -v --tb=short
+
+test-integration: ## Run integration tests
+	python -m pytest tests/integration -v --tb=short
+
+test-e2e: ## Run e2e tests (requires running infrastructure)
+	python -m pytest tests/e2e -v --tb=short -m e2e
+
+test-all: ## Run all tests (unit + integration + e2e)
+	python -m pytest tests/ -v --tb=short
+
+test-ci: ## Run unit + integration tests (CI-friendly, no infra needed)
+	python -m pytest tests/unit tests/integration -v --tb=short --cov=services --cov-report=term-missing
